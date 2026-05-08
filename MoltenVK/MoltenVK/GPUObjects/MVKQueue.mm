@@ -24,6 +24,7 @@
 #include "MVKFoundation.h"
 #include "MVKOSExtensions.h"
 #include "MVKGPUCapture.h"
+#include "atrium_trace.h"
 
 using namespace std;
 
@@ -463,6 +464,8 @@ MVKQueueSubmission::~MVKQueueSubmission() {
 
 VkResult MVKQueueCommandBufferSubmission::execute() {
 
+	ATRIUM_TRACE_BEGIN("mvk.execute");
+
 	_queue->_submissionCaptureScope->beginScope();
 
 	// If using encoded semaphore waiting, do so now.
@@ -479,7 +482,9 @@ VkResult MVKQueueCommandBufferSubmission::execute() {
 
 	// Commit the last MTLCommandBuffer.
 	// Nothing after this because callback might destroy this instance before this function ends.
-	return commitActiveMTLCommandBuffer(true);
+	VkResult result = commitActiveMTLCommandBuffer(true);
+	ATRIUM_TRACE_END("mvk.execute");
+	return result;
 }
 
 // Returns the active MTLCommandBuffer, lazily retrieving it from the queue if needed.
@@ -547,12 +552,14 @@ VkResult MVKQueueCommandBufferSubmission::commitActiveMTLCommandBuffer(bool sign
 
 	uint64_t startTime = getPerformanceTimestamp();
 	[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mtlCB) {
+		ATRIUM_TRACE_INSTANT("mvk.gpu.completed");
 		addPerformanceInterval(getPerformanceStats().queue.mtlCommandBufferExecution, startTime);
 		if (signalCompletion) { this->finish(); }	// Must be the last thing the completetion callback does.
 	}];
 
 	// Retrieve the result before committing MTLCommandBuffer, because finish() will destroy this instance.
 	VkResult rslt = mtlCmdBuff ? getConfigurationResult() : VK_ERROR_OUT_OF_POOL_MEMORY;
+	ATRIUM_TRACE_INSTANT("mvk.metal.commit");
 	[mtlCmdBuff commit];
 	[mtlCmdBuff release];		// retained
 
