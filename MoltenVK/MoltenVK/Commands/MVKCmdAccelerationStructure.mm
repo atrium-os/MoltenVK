@@ -109,6 +109,23 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                                             sizeof(instanceCount),
                                             3);
 
+                // Declare the buffers this convert dispatch touches as resident on THIS encoder.
+                // tmpBuff is the private/transient pool buffer that is no longer added to the
+                // global residency set (see MVKMTLBufferAllocationPool::addMTLBuffer) — without an
+                // explicit useResource: here it would page-fault on write. The instances input
+                // buffer is a normal device buffer; cover it via its parent heap when placement-
+                // heap-backed, else useResource:.
+                if (tmpBuff->_mtlBuffer.heap) {
+                    [mtlConvertEncoder useHeap: tmpBuff->_mtlBuffer.heap];
+                } else {
+                    [mtlConvertEncoder useResource: tmpBuff->_mtlBuffer usage: MTLResourceUsageWrite];
+                }
+                if (id<MTLHeap> instHeap = mvkInstancesBuffer->getMTLHeap()) {
+                    [mtlConvertEncoder useHeap: instHeap];
+                } else {
+                    [mtlConvertEncoder useResource: mvkInstancesBuffer->getMTLBuffer() usage: MTLResourceUsageRead];
+                }
+
                 if (cmdEncoder->getMetalFeatures().nonUniformThreadgroups) {
                     [mtlConvertEncoder dispatchThreads: MTLSizeMake(instanceCount, 1, 1)
                                  threadsPerThreadgroup: MTLSizeMake(mtlConvertState.threadExecutionWidth, 1, 1)];
