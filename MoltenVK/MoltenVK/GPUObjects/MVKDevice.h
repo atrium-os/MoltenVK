@@ -1014,12 +1014,19 @@ public:
 	void makeResident(id allocation) {}
 #else
 	void makeResident(id<MTLAllocation> allocation) {
+		if ( !allocation ) { return; }
 		@synchronized(_residencySet) {
-			// Only ADD here, never commit. Committing a residency set while a command
-			// encoder is open (heaps get added during vkCmdBuildAccelerationStructures
-			// recording) traps. Defer the commit to queue submit, where no encoder is open.
-			[_residencySet addAllocation: allocation];
-			_residencySetDirty = true;
+			// Refcount shared allocations: a single MTLHeap can back many resources
+			// (e.g. multiple acceleration structures sub-allocated from one AS-storage
+			// VkBuffer/VkDeviceMemory). Only add on the first reference. Only ADD here,
+			// never commit: committing while a command encoder is open (heaps get added
+			// during vkCmdBuildAccelerationStructures recording) traps. Defer the commit
+			// to queue submit, where no encoder is open.
+			const void* key = (__bridge const void*)allocation;
+			if (++_residencyRefCounts[key] == 1) {
+				[_residencySet addAllocation: allocation];
+				_residencySetDirty = true;
+			}
 		}
 	}
 #endif
@@ -1028,9 +1035,17 @@ public:
 	void removeResidency(id allocation) {}
 #else
 	void removeResidency(id<MTLAllocation> allocation) {
+		if ( !allocation ) { return; }
 		@synchronized(_residencySet) {
-			[_residencySet removeAllocation:allocation];
-			_residencySetDirty = true;
+			// Only evict once the last reference to this shared allocation is gone.
+			const void* key = (__bridge const void*)allocation;
+			auto it = _residencyRefCounts.find(key);
+			if (it == _residencyRefCounts.end()) { return; }
+			if (--(it->second) == 0) {
+				[_residencySet removeAllocation: allocation];
+				_residencyRefCounts.erase(it);
+				_residencySetDirty = true;
+			}
 		}
 	}
 #endif
@@ -1154,6 +1169,7 @@ protected:
 	MVKAddressMap* _gpuBufferAddressMap;
 	std::unordered_map<uint64_t, MVKAccelerationStructure*> _gpuAccStructAddressMap;
 	MVKSmallVector<id<MTLAccelerationStructure>> _allAccStructs;
+	MVKSmallVector<size_t> _freeAccStructSlots;
 	MVKSmallVector<MVKPrivateDataSlot*> _privateDataSlots;
 	MVKSmallVector<bool> _privateDataSlotsAvailability;
 	MVKSmallVector<MVKSemaphoreImpl*> _awaitingSemaphores;
@@ -1170,6 +1186,7 @@ protected:
 	id<MTLBuffer> _dummyBlitMTLBuffer = nil;
 #if MVK_XCODE_16
 	id<MTLResidencySet> _residencySet = nil;
+	std::unordered_map<const void*, uint32_t> _residencyRefCounts;
 	bool _residencySetDirty = false;
 #endif
 	uint32_t _visibilityBufferCount = 0;

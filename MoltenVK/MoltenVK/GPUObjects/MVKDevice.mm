@@ -4701,11 +4701,19 @@ void MVKDevice::removeTimelineSemaphore(MVKTimelineSemaphore* sem4, uint64_t val
 MVKAccelerationStructure* MVKDevice::addAccelerationStructure(MVKAccelerationStructure* accStruct) {
     std::lock_guard<std::mutex> lock(_accLock);
 
-    // TODO: free list
-    uint64_t address = kMVKAccelerationStructureBaseAddr + _allAccStructs.size();
-    _gpuAccStructAddressMap.insert({ address, accStruct });
-    _allAccStructs.push_back(accStruct->getMTLAccelerationStructure());
+    id<MTLAccelerationStructure> mtlAS = accStruct->getMTLAccelerationStructure();
+    size_t index;
+    if ( !_freeAccStructSlots.empty() ) {
+        index = _freeAccStructSlots.back();
+        _freeAccStructSlots.pop_back();
+        _allAccStructs[index] = mtlAS;
+    } else {
+        index = _allAccStructs.size();
+        _allAccStructs.push_back(mtlAS);
+    }
 
+    uint64_t address = kMVKAccelerationStructureBaseAddr + index;
+    _gpuAccStructAddressMap.insert({ address, accStruct });
     accStruct->_address = address;
 
     return accStruct;
@@ -4714,9 +4722,20 @@ MVKAccelerationStructure* MVKDevice::addAccelerationStructure(MVKAccelerationStr
 void MVKDevice::removeAccelerationStructure(MVKAccelerationStructure* accStruct) {
     std::lock_guard<std::mutex> lock(_accLock);
 
-    _gpuAccStructAddressMap.erase(accStruct->getDeviceAddress());
+    uint64_t address = accStruct->getDeviceAddress();
+    _gpuAccStructAddressMap.erase(address);
 
-    // TODO: remove entry from _allAccStructs
+    // Recycle the slot: _allAccStructs is scanned for every TLAS build, so a
+    // released MTLAccelerationStructure left in it is a use-after-free, and never
+    // reclaiming slots grows it without bound. getAccelerationStructureList() skips
+    // nil entries, so clearing the slot is safe; the index returns to the free list.
+    if (address >= kMVKAccelerationStructureBaseAddr) {
+        size_t index = (size_t)(address - kMVKAccelerationStructureBaseAddr);
+        if (index < _allAccStructs.size()) {
+            _allAccStructs[index] = nil;
+            _freeAccStructSlots.push_back(index);
+        }
+    }
 }
 
 void MVKDevice::applyMemoryBarrier(MVKPipelineBarrier& barrier,
