@@ -81,7 +81,14 @@ VkResult MVKBuffer::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDeviceSize memOf
 
 	propagateDebugName();
 
-	return _deviceMemory ? _deviceMemory->addBuffer(this) : VK_SUCCESS;
+	VkResult result = _deviceMemory ? _deviceMemory->addBuffer(this) : VK_SUCCESS;
+
+	// Track memory address once it is bound
+	if (result == VK_SUCCESS && mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)) {
+		getDevice()->trackBufferAddress(this, true);
+	}
+
+	return result;
 }
 
 VkResult MVKBuffer::bindDeviceMemory2(const VkBindBufferMemoryInfo* pBindInfo) {
@@ -150,6 +157,27 @@ bool MVKBuffer::overlaps(VkDeviceSize offset, VkDeviceSize size, VkDeviceSize &o
 
 id<MTLBuffer> MVKBuffer::getMTLBuffer() {
 	if (_mtlBuffer) { return _mtlBuffer; }
+	if ((!_deviceMemory || !_deviceMemory->getMTLHeap()) && mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR)) {
+		lock_guard<mutex> lock(_lock);
+		if (_mtlBuffer) { return _mtlBuffer; }
+
+		MTLHeapDescriptor* heapDescriptor = [MTLHeapDescriptor new];
+		heapDescriptor.type = MTLHeapTypePlacement;
+		heapDescriptor.storageMode = MTLStorageModePrivate;
+		heapDescriptor.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+		heapDescriptor.hazardTrackingMode = MTLHazardTrackingModeTracked;
+		heapDescriptor.size = getByteCount();
+		_mtlHeap = [getMTLDevice() newHeapWithDescriptor:heapDescriptor];
+		[heapDescriptor release];
+		if (!_mtlHeap) return nil;
+
+		_mtlBuffer = [_mtlHeap newBufferWithLength: getByteCount()
+		                                   options: mvkMTLResourceOptions(MTLStorageModePrivate, MTLCPUCacheModeDefaultCache)
+		                                    offset: 0];
+
+		propagateDebugName();
+		return _mtlBuffer;
+	}
 	if (_deviceMemory) {
 		if (_deviceMemory->getMTLHeap()) {
             lock_guard<mutex> lock(_lock);
@@ -166,6 +194,12 @@ id<MTLBuffer> MVKBuffer::getMTLBuffer() {
 			return _deviceMemory->getMTLBuffer();
 		}
 	}
+	return nil;
+}
+
+id<MTLHeap> MVKBuffer::getMTLHeap() {
+	if (_mtlHeap) { return _mtlHeap; }
+	if (_deviceMemory && _deviceMemory->getMTLHeap()) { return _deviceMemory->getMTLHeap(); }
 	return nil;
 }
 
@@ -236,6 +270,8 @@ void MVKBuffer::destroy() {
 
 // Potentially called twice, from destroy() and destructor, so ensure everything is nulled out.
 void MVKBuffer::detachMemory() {
+	if ((_mtlBuffer || _deviceMemory) && mvkIsAnyFlagEnabled(_usage, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT))
+		getDevice()->trackBufferAddress(this, false);
 	if (_deviceMemory) { MVKDeviceMemory::removeBuffer(&_deviceMemory, this); }
 	MVKLiveResourceSet& live = _device->getLiveResources();
 	if (id<MTLBuffer> buf = _mtlBuffer) {
@@ -244,6 +280,8 @@ void MVKBuffer::detachMemory() {
 		live.remove(buf);
 		[buf release];
 	}
+	[_mtlHeap release];
+	_mtlHeap = nil;
 }
 
 

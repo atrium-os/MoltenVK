@@ -142,6 +142,9 @@ public:
 	/** Returns a MTLComputePipelineState for converting a Uint8 index buffer to Uint16. */
 	id<MTLComputePipelineState> getConvertUint8IndicesMTLComputePipelineState();
 
+	/** Returns a MTLComputePipelineState for converting Vulkan acceleration structure instances to MTL instances. */
+	id<MTLComputePipelineState> getCmdBuildAccelerationStructureConvertBuffersMTLComputePipelineState();
+
 	/** Deletes all the internal resources. */
 	void clear();
 
@@ -184,4 +187,5 @@ protected:
 	id<MTLComputePipelineState> _mtlCopyQueryPoolResultsComputePipelineState = nil;
 	id<MTLComputePipelineState> _mtlAccumOcclusionQueryResultsComputePipelineState = nil;
 	id<MTLComputePipelineState> _mtlConvertUint8IndicesComputePipelineState = nil;
+	id<MTLComputePipelineState> _mtlBuildAccStructConvertComputePipelineState = nil;
 };
