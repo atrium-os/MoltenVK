@@ -55,6 +55,11 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
         }
 
         id<MTLTexture> tex;
+        // Whether `tex` ends up being a placement-heap or buffer sub-allocation rather than a
+        // standalone MTLTexture. With a global residency set, only standalone textures are added;
+        // the parent heap (made resident in ensureMTLHeap) / parent texel buffer is the residency
+        // unit. Adding a sub-allocation crashes in IOGPUResourceListAddResource at submit.
+        bool texIsSubAllocation = false;
         // Use imported texture if we are binding to a VkDeviceMemory that was created with an import operation
         if (dvcMem && (dvcMem->_externalMemoryHandleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLTEXTURE_BIT_EXT) && dvcMem->_mtlTexture) {
             tex = dvcMem->_mtlTexture;
@@ -68,6 +73,7 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
                    newTextureWithDescriptor: mtlTexDesc
                    offset: memoryBinding->_mtlTexelBufferOffset + _subresources[0].layout.offset
                    bytesPerRow: _subresources[0].layout.rowPitch];
+            texIsSubAllocation = true;
         } else if (dvcMem && dvcMem->getMTLHeap() && !_image->getIsDepthStencil()) {
             // Metal support for depth/stencil from heaps is flaky
             _heapAllocation.heap = dvcMem->getMTLHeap();
@@ -79,6 +85,7 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
                            newTextureWithDescriptor: mtlTexDesc
                            offset: _heapAllocation.offset];
             if (_image->_isAliasable) { [_mtlTexture makeAliasable]; }
+            texIsSubAllocation = true;
         } else if (_image->_isAliasable && dvcMem && dvcMem->isDedicatedAllocation() &&
             !mvkContains(dvcMem->_imageMemoryBindings, memoryBinding)) {
             // This is a dedicated allocation, but it belongs to another aliasable image.
@@ -90,7 +97,7 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
             tex = [_image->getMTLDevice() newTextureWithDescriptor: mtlTexDesc];
         }
         if (tex.storageMode != MTLStorageModeMemoryless) {
-            _image->_device->makeResident(tex);
+            if (!texIsSubAllocation) { _image->_device->makeResident(tex); }
             _image->_device->getLiveResources().add(tex);
         }
         _mtlTexture = tex;
@@ -487,16 +494,22 @@ VkResult MVKImageMemoryBinding::bindDeviceMemory(MVKDeviceMemory* mvkMem, VkDevi
         } else {
             // Create our own buffer for this.
             if (_ownsTexelBuffer) { [_mtlTexelBuffer release]; }
+            bool texelBufferFromHeap = false;
             if (_deviceMemory->_mtlHeap && _image->getMTLStorageMode() == _deviceMemory->_mtlStorageMode) {
                 _mtlTexelBuffer = [_deviceMemory->_mtlHeap newBufferWithLength: _byteCount options: _deviceMemory->getMTLResourceOptions() offset: getDeviceMemoryOffset()];
                 if (_image->_isAliasable) { [_mtlTexelBuffer makeAliasable]; }
+                texelBufferFromHeap = true;
             } else {
                 _mtlTexelBuffer = [getMTLDevice() newBufferWithLength: _byteCount options: _image->getMTLStorageMode() << MTLResourceStorageModeShift];
             }
             if (!_mtlTexelBuffer) {
                 return reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "Could not create an MTLBuffer for an image that requires a buffer backing store. Images that can be used for atomic accesses must have a texel buffer backing them.");
             }
-            _device->makeResident(_mtlTexelBuffer);
+            // A heap-backed texel buffer is a placement-heap sub-allocation; its parent heap is the
+            // residency unit and was already made resident in MVKDeviceMemory::ensureMTLHeap().
+            // Adding the sub-allocation crashes in IOGPUResourceListAddResource at submit. Only make
+            // a standalone (non-heap-backed) texel buffer resident.
+            if (!texelBufferFromHeap) { _device->makeResident(_mtlTexelBuffer); }
             _device->getLiveResources().add(_mtlTexelBuffer);
             _mtlTexelBufferOffset = 0;
             _ownsTexelBuffer = true;

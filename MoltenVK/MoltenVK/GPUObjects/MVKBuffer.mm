@@ -191,7 +191,11 @@ id<MTLBuffer> MVKBuffer::getMTLBuffer() {
 			id<MTLBuffer> buf = [_deviceMemory->getMTLHeap() newBufferWithLength: getByteCount()
 			                                                             options: _deviceMemory->getMTLResourceOptions()
 			                                                              offset: _deviceMemoryOffset];	// retained
-			_device->makeResident(buf);
+			// This MTLBuffer is a placement-heap sub-allocation. With a global residency set the
+			// parent MTLHeap — not the sub-allocation — is the residency unit, and adding the
+			// sub-allocation crashes in IOGPUResourceListAddResource at submit. The owning
+			// MVKDeviceMemory already made its heap resident in ensureMTLHeap(); here we only
+			// track liveness of the sub-allocation (used by descriptor binding), not residency.
 			_device->getLiveResources().add(buf);
 			_mtlBuffer = buf;
 			propagateDebugName();

@@ -229,6 +229,13 @@ bool MVKDeviceMemory::ensureMTLHeap() {
 	[heapDesc release];
 	if (!_mtlHeap) { return false; }
 
+	// With a global residency set, the MTLHeap — not its placement-heap sub-allocations —
+	// is the residency unit. Make the heap resident here, where its lifetime is owned, so
+	// that buffers sub-allocated from it (in MVKBuffer / ensureMTLBuffer) need not (and must
+	// not) add their own sub-allocations to the residency set. Residency is dropped in the
+	// destructor. Adding a sub-allocation instead crashes in IOGPUResourceListAddResource.
+	_device->makeResident(_mtlHeap);
+
 	propagateDebugName();
 
 	return true;
@@ -265,7 +272,11 @@ bool MVKDeviceMemory::ensureMTLBuffer() {
 		buf = [getMTLDevice() newBufferWithLength: memLen options: getMTLResourceOptions()];     // retained
 	}
 	if (!buf) { return false; }
-	_device->makeResident(buf);
+	// When backed by a placement MTLHeap, `buf` is a heap sub-allocation: the heap is the
+	// residency unit and was already made resident in ensureMTLHeap(). Adding the
+	// sub-allocation itself crashes in IOGPUResourceListAddResource at submit, so only make
+	// `buf` resident when it is a standalone (non-heap-backed) MTLBuffer.
+	if (!_mtlHeap) { _device->makeResident(buf); }
 	_device->getLiveResources().add(buf);
 	_pMemory = isMemoryHostAccessible() ? buf.contents : nullptr;
 	_mtlBuffer = buf;
@@ -518,8 +529,13 @@ MVKDeviceMemory::~MVKDeviceMemory() {
 		[buf release];
 	}
 
-	[_mtlHeap release];
-	_mtlHeap = nil;
+	if (id<MTLHeap> heap = _mtlHeap) {
+		_mtlHeap = nil;
+		// Mirror the makeResident() in ensureMTLHeap(). removeAllocation: is a no-op if the
+		// heap was never made resident, so this is safe for heaps that skipped residency.
+		_device->removeResidency(heap);
+		[heap release];
+	}
 
 	freeHostMemory();
 }
