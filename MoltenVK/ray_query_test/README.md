@@ -79,3 +79,60 @@ Use a tiny Vulkan host (vkcube-style, or a scratch `main.cpp`). Key steps:
 `hit == 1` (committed triangle intersection) → `VK_KHR_ray_query` works on the
 Apple GPU through MoltenVK. A `hit == 0` would indicate the AS was not bound /
 not resident, or the ray-query capability did not survive SPIR-V → MSL.
+
+## 4. Host programs in this directory
+
+Two self-contained C hosts implement the outline above and both print
+`RESULT: hit=1 t=1.0000 primitiveIndex=0 instanceId=0` on an M4 Max:
+
+- **`host.c` → `rqtest`** links MoltenVK **directly** (`-lMoltenVK`, no loader).
+  Build:
+  ```sh
+  cc host.c -o rqtest -I ../../External/Vulkan-Headers/include \
+     -L<Package/Debug/.../macOS> -lMoltenVK -Wl,-rpath,<same>
+  ./rqtest
+  ```
+
+- **`host_loader.c` → `rqtest_loader`** goes through the **Vulkan loader**
+  (`-lvulkan`, brew libvulkan), the path a normal app / `ash::Entry::load()` uses.
+  Build & run:
+  ```sh
+  cc host_loader.c -o rqtest_loader -I ../../External/Vulkan-Headers/include \
+     -L/opt/homebrew/lib -lvulkan -Wl,-rpath,/opt/homebrew/lib
+  VK_DRIVER_FILES=<Package/Debug/.../MoltenVK_icd.json> \
+    DYLD_LIBRARY_PATH=/opt/homebrew/lib ./rqtest_loader
+  ```
+
+## 5. The loader enumeration quirk (important for loader-based apps)
+
+The Vulkan **loader** (brew `vulkan-loader` 1.4.341) omits
+`VK_KHR_acceleration_structure` and `VK_KHR_ray_query` — and **only** those two —
+from `vkEnumerateDeviceExtensionProperties` for the MoltenVK *portability*
+driver. Diagnosed in detail:
+
+- MoltenVK advertises both correctly: its instance "supported extensions" banner
+  lists 155 incl. AS/ray_query, and a **direct** (`-lMoltenVK`) device
+  enumeration returns 133 incl. both.
+- Through the loader the same dylib's device enumeration returns 131 — exactly
+  AS + ray_query removed. Confirmed *not* a stale build, *not* the brew static
+  lib, *not* an implicit layer, and *not* MoltenVK's own device-extension gating
+  (all of AS's deps — `deferred_host_operations`, `buffer_device_address`,
+  `descriptor_indexing` — pass through fine).
+- Root cause is loader-side: AS declares a `depends` on the **instance**
+  extension `VK_KHR_get_physical_device_properties2`; the loader's portability
+  path checks that against the **device** list (where it never appears) and
+  drops AS, then ray_query (which `depends` on AS). Enabling GPDP2 at the
+  instance does not change it.
+
+**The filter is cosmetic.** Through the loader you can still:
+- `vkCreateDevice` with AS + ray_query enabled → `VK_SUCCESS`, and
+- `vkGetDeviceProcAddr("vkGetAccelerationStructureBuildSizesKHR")` → non-null,
+
+and the full BLAS/TLAS/ray-query path runs (`rqtest_loader` → `hit=1`).
+
+**Rule for loader-based apps (incl. Orbis `aqueduct-gpu-host`):** detect
+ray-query support via `vkGetPhysicalDeviceFeatures2` →
+`VkPhysicalDeviceRayQueryFeaturesKHR.rayQuery` (reported correctly through the
+loader), **not** via device-extension enumeration, and request
+`VK_KHR_acceleration_structure` / `VK_KHR_ray_query` at device creation
+unconditionally. See `host_loader.c` for the exact pattern.
