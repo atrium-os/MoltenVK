@@ -34,7 +34,20 @@ static uint32_t findMem(uint32_t typeBits, VkMemoryPropertyFlags want) {
 }
 
 // host-visible|coherent buffer; adds device-address alloc flag when requested.
-static void mkBuffer(VkDeviceSize sz, VkBufferUsageFlags usage, int deviceAddr,
+// device-local & NOT host-visible -> Metal MTLStorageModePrivate (required for
+// acceleration-structure backing heaps).
+static uint32_t findMemPrivate(uint32_t typeBits) {
+    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+        if ((typeBits & (1u<<i)) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            && !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) return i;
+    }
+    fprintf(stderr, "no private (device-local) memory type\n"); exit(2);
+}
+// `priv` -> device-local Private memory (AS storage must be Private); else
+// host-visible|coherent (mappable, for vertices/instances/readback).
+static void mkBuffer(VkDeviceSize sz, VkBufferUsageFlags usage, int deviceAddr, int priv,
                      VkBuffer *buf, VkDeviceMemory *mem) {
     VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size = sz; bci.usage = usage; bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -45,8 +58,8 @@ static void mkBuffer(VkDeviceSize sz, VkBufferUsageFlags usage, int deviceAddr,
     VkMemoryAllocateInfo ai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     ai.pNext = deviceAddr ? &fi : NULL;
     ai.allocationSize = req.size;
-    ai.memoryTypeIndex = findMem(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ai.memoryTypeIndex = priv ? findMemPrivate(req.memoryTypeBits)
+        : findMem(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VK_CHECK(vkAllocateMemory(dev, &ai, NULL, mem));
     VK_CHECK(vkBindBufferMemory(dev, *buf, *mem, 0));
 }
@@ -148,7 +161,7 @@ int main(int argc, char **argv) {
 
     // ---- vertices (one triangle in z=0) ----
     float verts[9] = { -0.5f,-0.5f,0.0f,  0.5f,-0.5f,0.0f,  0.0f,0.5f,0.0f };
-    VkBuffer vbuf; VkDeviceMemory vmem; mkBuffer(sizeof(verts), ASIN, 1, &vbuf, &vmem);
+    VkBuffer vbuf; VkDeviceMemory vmem; mkBuffer(sizeof(verts), ASIN, 1, 0, &vbuf, &vmem);
     memcpy(mapAll(vmem, sizeof(verts)), verts, sizeof(verts)); vkUnmapMemory(dev, vmem);
 
     // ---- BLAS ----
@@ -171,9 +184,9 @@ int main(int argc, char **argv) {
     pGetBuildSizes(dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bbi, &one, &bsz);
 
     VkBuffer blasBuf; VkDeviceMemory blasMem;
-    mkBuffer(bsz.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, &blasBuf, &blasMem);
+    mkBuffer(bsz.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 1, &blasBuf, &blasMem);
     VkBuffer bscratch; VkDeviceMemory bscratchMem;
-    mkBuffer(bsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, &bscratch, &bscratchMem);
+    mkBuffer(bsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 0, &bscratch, &bscratchMem);
     VkAccelerationStructureCreateInfoKHR bci = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
     bci.buffer = blasBuf; bci.size = bsz.accelerationStructureSize; bci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     CHK("BLAS create");
@@ -191,7 +204,7 @@ int main(int argc, char **argv) {
     instData.transform.matrix[0][0] = instData.transform.matrix[1][1] = instData.transform.matrix[2][2] = 1.0f;
     instData.mask = 0xFF; instData.instanceCustomIndex = 0;
     instData.accelerationStructureReference = pGetASAddr(dev, &dai);
-    VkBuffer ibuf; VkDeviceMemory imem; mkBuffer(sizeof(instData), ASIN, 1, &ibuf, &imem);
+    VkBuffer ibuf; VkDeviceMemory imem; mkBuffer(sizeof(instData), ASIN, 1, 0, &ibuf, &imem);
     memcpy(mapAll(imem, sizeof(instData)), &instData, sizeof(instData)); vkUnmapMemory(dev, imem);
 
     VkAccelerationStructureGeometryKHR tgeo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
@@ -207,9 +220,9 @@ int main(int argc, char **argv) {
     CHK("TLAS getBuildSizes");
     pGetBuildSizes(dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tbi, &one, &tsz);
     VkBuffer tlasBuf; VkDeviceMemory tlasMem;
-    mkBuffer(tsz.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, &tlasBuf, &tlasMem);
+    mkBuffer(tsz.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 1, &tlasBuf, &tlasMem);
     VkBuffer tscratch; VkDeviceMemory tscratchMem;
-    mkBuffer(tsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, &tscratch, &tscratchMem);
+    mkBuffer(tsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 0, &tscratch, &tscratchMem);
     VkAccelerationStructureCreateInfoKHR tci = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
     tci.buffer = tlasBuf; tci.size = tsz.accelerationStructureSize; tci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     CHK("TLAS create");
@@ -232,7 +245,7 @@ int main(int argc, char **argv) {
     endCmd(cb);
 
     // ---- result SSBO ----
-    VkBuffer rbuf; VkDeviceMemory rmem; mkBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, &rbuf, &rmem);
+    VkBuffer rbuf; VkDeviceMemory rmem; mkBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0, 0, &rbuf, &rmem);
     memset(mapAll(rmem, 16), 0, 16); vkUnmapMemory(dev, rmem);
 
     // ---- descriptor set: binding0 AS, binding1 SSBO ----
