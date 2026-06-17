@@ -11,7 +11,6 @@
 
 #define VK_CHECK(x) do { VkResult _r = (x); if (_r != VK_SUCCESS) { \
     fprintf(stderr, "VK_CHECK failed %d at %s:%d\n", _r, __FILE__, __LINE__); exit(2);} } while(0)
-#define CHK(s) (fprintf(stderr, "CHK: %s\n", (s)), fflush(stderr))
 
 static VkInstance       inst;
 static VkPhysicalDevice phys;
@@ -180,7 +179,6 @@ int main(int argc, char **argv) {
     bbi.geometryCount = 1; bbi.pGeometries = &bgeo;
     uint32_t one = 1;
     VkAccelerationStructureBuildSizesInfoKHR bsz = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-    CHK("BLAS getBuildSizes");
     pGetBuildSizes(dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &bbi, &one, &bsz);
 
     VkBuffer blasBuf; VkDeviceMemory blasMem;
@@ -189,7 +187,6 @@ int main(int argc, char **argv) {
     mkBuffer(bsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 0, &bscratch, &bscratchMem);
     VkAccelerationStructureCreateInfoKHR bci = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
     bci.buffer = blasBuf; bci.size = bsz.accelerationStructureSize; bci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    CHK("BLAS create");
     VkAccelerationStructureKHR blas; VK_CHECK(pCreateAS(dev, &bci, NULL, &blas));
     bbi.dstAccelerationStructure = blas;
     VkDeviceAddress sa = bufAddr(bscratch); sa = (sa + scratchAlign - 1) & ~(scratchAlign - 1);
@@ -217,7 +214,6 @@ int main(int argc, char **argv) {
     tbi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     tbi.geometryCount = 1; tbi.pGeometries = &tgeo;
     VkAccelerationStructureBuildSizesInfoKHR tsz = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-    CHK("TLAS getBuildSizes");
     pGetBuildSizes(dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &tbi, &one, &tsz);
     VkBuffer tlasBuf; VkDeviceMemory tlasMem;
     mkBuffer(tsz.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 1, &tlasBuf, &tlasMem);
@@ -225,7 +221,6 @@ int main(int argc, char **argv) {
     mkBuffer(tsz.buildScratchSize + scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 1, 0, &tscratch, &tscratchMem);
     VkAccelerationStructureCreateInfoKHR tci = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
     tci.buffer = tlasBuf; tci.size = tsz.accelerationStructureSize; tci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-    CHK("TLAS create");
     VkAccelerationStructureKHR tlas; VK_CHECK(pCreateAS(dev, &tci, NULL, &tlas));
     tbi.dstAccelerationStructure = tlas;
     VkDeviceAddress ta = bufAddr(tscratch); ta = (ta + scratchAlign - 1) & ~(scratchAlign - 1);
@@ -235,7 +230,6 @@ int main(int argc, char **argv) {
 
     // ---- record both builds (BLAS, barrier, TLAS) ----
     VkCommandBuffer cb = beginCmd();
-    CHK("record BLAS+TLAS build");
     pCmdBuildAS(cb, 1, &bbi, &pbr);
     VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
     mb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
@@ -295,7 +289,6 @@ int main(int argc, char **argv) {
     endCmd(cb2);
 
     // ---- read back ----
-    CHK("dispatch done, reading back");
     struct { uint32_t hit; float t; uint32_t prim; uint32_t inst; } *res = mapAll(rmem, 16);
     printf("RESULT: hit=%u t=%.4f primitiveIndex=%u instanceId=%u\n", res->hit, res->t, res->prim, res->inst);
     int ok = (res->hit == 1u && res->prim == 0u && res->t > 0.5f && res->t < 1.5f);

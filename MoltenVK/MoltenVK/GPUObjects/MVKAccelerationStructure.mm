@@ -149,13 +149,15 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
                 // TODO: Throw error, invalid TLAS geometry type
                 break;
 
+            // getAccelerationStructureList() returns an AUTORELEASED array; we do NOT own it.
+            // The descriptor's instancedAccelerationStructures property takes its own reference,
+            // so we must NOT release the array — doing so over-releases it, deallocing it
+            // prematurely when the autorelease pool drains and corrupting the command buffer's
+            // resource array (crash in objc_release at cmd-buffer dealloc on GPU completion).
             NSArray<id<MTLAccelerationStructure>>* accelerationStructureList = getDevice()->getAccelerationStructureList();
             MTLInstanceAccelerationStructureDescriptor* tlas = [MTLInstanceAccelerationStructureDescriptor new];
             tlas.instanceDescriptorType = MTLAccelerationStructureInstanceDescriptorTypeUserID;
             tlas.instancedAccelerationStructures = accelerationStructureList;
-            [accelerationStructureList release];
-
-            // TODO: need to release array copy?
 
             // Buffer and buffer offset must be populated later since instance data will be converted
 

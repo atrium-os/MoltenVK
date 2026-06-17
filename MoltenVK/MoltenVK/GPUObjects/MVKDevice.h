@@ -1014,13 +1014,6 @@ public:
 	void makeResident(id allocation) {}
 #else
 	void makeResident(id<MTLAllocation> allocation) {
-		// TEMP DEBUG: log every object added to the residency set. Anything that is NOT an
-		// MTLHeap (i.e. an …Buffer/…AccelerationStructure/…Texture that is a placement-heap
-		// sub-allocation) is a remaining sub-allocation bug to fix. Strip once green.
-		fprintf(stderr, "[resident] %s %p\n",
-		        allocation ? [NSStringFromClass([(id)allocation class]) UTF8String] : "(nil)",
-		        (void*)allocation);
-		fflush(stderr);
 		@synchronized(_residencySet) {
 			// Only ADD here, never commit. Committing a residency set while a command
 			// encoder is open (heaps get added during vkCmdBuildAccelerationStructures

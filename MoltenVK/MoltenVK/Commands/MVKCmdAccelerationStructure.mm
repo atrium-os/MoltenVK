@@ -221,7 +221,12 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                     // to the IOGPU resource list; useResource: as a safety net if heap is nil.
                     useHeapForResource(blas.heap, blas, MTLResourceUsageRead);
                 }
-                [blasList release];
+                // NOTE: blasList is the AUTORELEASED array returned by
+                // getAccelerationStructureList() ([NSMutableArray arrayWithCapacity:]).
+                // We do NOT own it, so we must NOT release it here — doing so over-releases
+                // the array, which then deallocs prematurely when the surrounding autorelease
+                // pool drains (on the GPU-completion dispatch queue), corrupting the command
+                // buffer's resource array and crashing in objc_release at cmd-buffer dealloc.
             } else {
                 // BLAS: the geometry input buffers (vertex / index / transform / AABB).
                 for (uint32_t gi = 0; gi < buildInfo.geometryCount; gi++) {
