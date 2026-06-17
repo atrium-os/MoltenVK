@@ -157,6 +157,7 @@ VkResult MVKQueue::waitIdle(MVKCommandUse cmdUse) {
 	}
 	@autoreleasepool {
 		auto* mtlCmdBuff = getMTLCommandBuffer(cmdUse);
+		_device->commitResidencySetIfDirty();
 		[mtlCmdBuff commit];
 		[mtlCmdBuff waitUntilCompleted];
 	}
@@ -553,6 +554,10 @@ VkResult MVKQueueCommandBufferSubmission::commitActiveMTLCommandBuffer(bool sign
 
 	// Retrieve the result before committing MTLCommandBuffer, because finish() will destroy this instance.
 	VkResult rslt = mtlCmdBuff ? getConfigurationResult() : VK_ERROR_OUT_OF_POOL_MEMORY;
+	// Commit the residency set (if any allocations were added/removed during encoding) NOW, with
+	// no command encoder open, and BEFORE committing the MTLCommandBuffer that will use those
+	// resources. Committing the residency set mid-encode is the source of the AS-build trap.
+	_device->commitResidencySetIfDirty();
 	[mtlCmdBuff commit];
 	[mtlCmdBuff release];		// retained
 
@@ -744,6 +749,8 @@ VkResult MVKQueuePresentSurfaceSubmission::execute() {
 	VkResult rslt = getConfigurationResult();
 	if (mtlCmdBuff) {
 		[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mtlCB) { this->finish(); }];
+		// Flush any pending residency-set changes with no encoder open, before this commit.
+		getDevice()->commitResidencySetIfDirty();
 		[mtlCmdBuff commit];
 	} else {
 		finish();

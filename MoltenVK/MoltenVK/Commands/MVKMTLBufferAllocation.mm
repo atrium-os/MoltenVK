@@ -53,21 +53,17 @@ void MVKMTLBufferAllocationPool::addMTLBuffer() {
 	// to the residency set crashes in IOGPUResourceListAddResource at submit. Mirror the guard used
 	// in MVKDeviceMemory: make the parent heap resident when present, else the standalone buffer.
 	//
-	// EXCEPTION — the private/transient allocator (MTLStorageModePrivate). Its buffers are only
-	// ever consumed within the command-buffer that allocated them, and every consumer declares the
-	// buffer's usage on its own encoder (useResource:/useHeap:) — e.g. the AS-instance-conversion
-	// tmpBuff is declared on BOTH the convert compute encoder (write) and the AS build encoder
-	// (read). Adding such a buffer to the GLOBAL residency set is therefore redundant, and worse:
-	// makeResident() commits the residency set, and addMTLBuffer() can run mid-encode (the convert
-	// compute encoder is open when getTempMTLBuffer grows the pool), which faults in
-	// IOGPUResourceListAddResource at submit. Skip the global add for the private allocator; the
-	// per-encoder useResource:/useHeap: declarations keep these buffers resident for their actual
-	// consumers. (Shared-storage temp buffers still take the global add — some consumers rely on it.)
-	if (_mtlStorageMode != MTLStorageModePrivate) {
-		id<MTLBuffer> poolBuf = _mtlBuffers.back().mtlBuffer;
-		if (poolBuf.heap) { getDevice()->makeResident(poolBuf.heap); }
-		else              { getDevice()->makeResident(poolBuf); }
-	}
+	// ALL pool buffers — including the private/transient allocator (MTLStorageModePrivate) — must
+	// be made resident. makeResident() now only ADDS to the residency set (the commit is deferred to
+	// queue submit, with no encoder open), so it is safe to call mid-encode: getTempMTLBuffer can
+	// grow the pool while the AS-instance convert compute encoder is open without faulting in
+	// IOGPUResourceListAddResource. The per-encoder useResource:/useHeap: declarations alone are NOT
+	// sufficient backing — the private tmpBuff's parent heap must be in the residency set or the GPU
+	// page-faults at AS build (round-5 regression). Make the parent heap resident when present,
+	// else the standalone buffer.
+	id<MTLBuffer> poolBuf = _mtlBuffers.back().mtlBuffer;
+	if (poolBuf.heap) { getDevice()->makeResident(poolBuf.heap); }
+	else              { getDevice()->makeResident(poolBuf); }
     _nextOffset = 0;
 }
 
@@ -134,12 +130,12 @@ MVKMTLBufferAllocationPool::~MVKMTLBufferAllocationPool() {
 		// is still backing other live sub-allocations — removeResidency on a heap is reference-free
 		// here only because each pool owns its buffers; a shared placement heap would over-remove,
 		// but pool buffers are not shared across pools).
-		// Mirror addMTLBuffer()'s exception: the private/transient allocator never added its buffers
-		// to the global residency set, so there is nothing to remove for it.
-		if (_mtlStorageMode != MTLStorageModePrivate) {
-			id<MTLBuffer> poolBuf = _mtlBuffers[bufferIndex].mtlBuffer;
-			if (!poolBuf.heap) { getDevice()->removeResidency(poolBuf); }
-		}
+		// All pool buffers (including private/transient) are now made resident in addMTLBuffer(),
+		// so all standalone (heap == nil) buffers are removed symmetrically here. Heap-backed pool
+		// buffers are intentionally NOT removed (a shared placement heap may still back other live
+		// sub-allocations); removeResidency on the standalone buffer only.
+		id<MTLBuffer> poolBuf = _mtlBuffers[bufferIndex].mtlBuffer;
+		if (!poolBuf.heap) { getDevice()->removeResidency(poolBuf); }
         [_mtlBuffers[bufferIndex].mtlBuffer release];
     }
     _mtlBuffers.clear();
