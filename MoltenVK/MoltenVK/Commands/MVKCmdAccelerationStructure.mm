@@ -92,7 +92,13 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 
                 // Allocate a dedicated placement-heap-backed Private buffer to store converted
                 // instance data. Heap is the residency unit; buffer is sub-allocated at offset 0.
-                NSUInteger tmpBuffSize = sizeof(MTLAccelerationStructureInstanceDescriptor) * ranges[0].primitiveCount;
+                // MUST size for the UserID descriptor: the descriptor type is
+                // MTLAccelerationStructureInstanceDescriptorTypeUserID and the convert kernel
+                // writes MTLAccelerationStructureUserIDInstanceDescriptor (larger than the plain
+                // MTLAccelerationStructureInstanceDescriptor). Sizing for the smaller struct
+                // overflowed the buffer by one userID field per instance → heap corruption → an
+                // intermittent/count-dependent GPU hang during the build.
+                NSUInteger tmpBuffSize = sizeof(MTLAccelerationStructureUserIDInstanceDescriptor) * ranges[0].primitiveCount;
                 MTLHeapDescriptor* tmpHeapDesc = [MTLHeapDescriptor new];
                 tmpHeapDesc.type = MTLHeapTypePlacement;
                 tmpHeapDesc.storageMode = MTLStorageModePrivate;
