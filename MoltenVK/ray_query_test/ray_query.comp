@@ -1,0 +1,53 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// Minimal ray_query validation shader for MoltenVK VK_KHR_ray_query.
+//
+// Binding 0: the top-level acceleration structure (VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR).
+// Binding 1: an SSBO that receives the result (1 = committed hit, 0 = miss).
+//
+// The host (see README.md) builds a single-triangle BLAS + a 1-instance TLAS,
+// then dispatches a single invocation. The ray is fired straight down the +Z
+// axis through the centre of the triangle, so a correct implementation must
+// report a committed triangle hit.
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT topLevelAS;
+
+layout(set = 0, binding = 1, std430) buffer Result {
+    uint hit;            // 1 = hit, 0 = miss
+    float t;             // committed ray t value
+    uint primitiveIndex; // committed primitive index
+    uint instanceId;     // committed instance custom index
+} result;
+
+void main() {
+    // Ray origin just in front of the triangle, pointing toward it (+Z).
+    vec3  origin    = vec3(0.0, 0.0, -1.0);
+    vec3  direction = vec3(0.0, 0.0,  1.0);
+    float tMin      = 0.001;
+    float tMax      = 100.0;
+
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, topLevelAS,
+                          gl_RayFlagsOpaqueEXT, // ray flags
+                          0xFF,                 // cull mask
+                          origin, tMin, direction, tMax);
+
+    // Traverse. For triangle-only geometry, no candidate processing is needed.
+    while (rayQueryProceedEXT(rq)) { }
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+        gl_RayQueryCommittedIntersectionTriangleEXT) {
+        result.hit            = 1u;
+        result.t              = rayQueryGetIntersectionTEXT(rq, true);
+        result.primitiveIndex = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+        result.instanceId     = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+    } else {
+        result.hit            = 0u;
+        result.t              = 0.0;
+        result.primitiveIndex = 0xFFFFFFFFu;
+        result.instanceId     = 0xFFFFFFFFu;
+    }
+}

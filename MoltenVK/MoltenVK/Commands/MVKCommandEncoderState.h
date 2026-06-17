@@ -50,9 +50,10 @@ struct MVKResourceBinder {
 	SEL _setOffset;
 	SEL _setTexture;
 	SEL _setSampler;
+	SEL _setAccelerationStructure;
 	UseResource useResource;
 	template <typename T> static MVKResourceBinder Create() {
-		return { T::selSetBytes(), T::selSetBuffer(), T::selSetOffset(), T::selSetTexture(), T::selSetSampler(), T::useResource() };
+		return { T::selSetBytes(), T::selSetBuffer(), T::selSetOffset(), T::selSetTexture(), T::selSetSampler(), T::selSetAccelerationStructure(), T::useResource() };
 	}
 	void setBytes(id<MTLCommandEncoder> encoder, const void* bytes, NSUInteger length, NSUInteger index) const {
 		reinterpret_cast<void(*)(id, SEL, const void*, NSUInteger, NSUInteger)>(objc_msgSend)(encoder, _setBytes, bytes, length, index);
@@ -68,6 +69,9 @@ struct MVKResourceBinder {
 	}
 	void setSampler(id<MTLCommandEncoder> encoder, id<MTLSamplerState> sampler, NSUInteger index) const {
 		reinterpret_cast<void(*)(id, SEL, id<MTLSamplerState>, NSUInteger)>(objc_msgSend)(encoder, _setSampler, sampler, index);
+	}
+	void setAccelerationStructure(id<MTLCommandEncoder> encoder, id<MTLAccelerationStructure> accelStruct, NSUInteger index) const {
+		reinterpret_cast<void(*)(id, SEL, id<MTLAccelerationStructure>, NSUInteger)>(objc_msgSend)(encoder, _setAccelerationStructure, accelStruct, index);
 	}
 	enum class Stage {
 		Vertex   = static_cast<uint32_t>(MVKMetalGraphicsStage::Vertex),

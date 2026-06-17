@@ -17,6 +17,7 @@
  */
 
 #include "MVKDescriptorSet.h"
+#include "MVKAccelerationStructure.h"
 #include "MVKBuffer.h"
 #include "MVKCommandBuffer.h"
 #include "MVKCommandEncoderState.h"
@@ -319,6 +320,10 @@ static MVKDescriptorResourceCount perDescriptorResourceCount(VkDescriptorType ty
 			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
 				count.buffer = 1;
 				break;
+			case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+				// An acceleration structure occupies a single buffer-index slot in MSL.
+				count.buffer = 1;
+				break;
 			default:
 				assert(0);
 				break;
@@ -356,6 +361,8 @@ static MVKDescriptorCPULayout pickCPULayout(
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: return MVKDescriptorCPULayout::OneID2Meta;
 		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:       return MVKDescriptorCPULayout::OneID;
 		case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:   return argBuf == MVKArgumentBufferMode::Off ? MVKDescriptorCPULayout::InlineData : MVKDescriptorCPULayout::None;
+		// Store the id<MTLAccelerationStructure> so it can be made resident (useResource) and bound directly.
+		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: return MVKDescriptorCPULayout::OneID;
 		default:                                        return MVKDescriptorCPULayout::None;
 	}
 }
@@ -388,6 +395,8 @@ static MVKDescriptorGPULayout pickGPULayout(
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: return MVKDescriptorGPULayout::BufferAuxSize;
 		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:       return MVKDescriptorGPULayout::Texture;
 		case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:   return MVKDescriptorGPULayout::OutlinedData;
+		// An acceleration structure is a single 64-bit resource ID in the argument buffer.
+		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: return MVKDescriptorGPULayout::Buffer;
 		default:                                        return MVKDescriptorGPULayout::None;
 	}
 }
@@ -758,7 +767,7 @@ MVKMTLArgumentEncoder& MVKDescriptorSetLayout::getVariableArgumentEncoder(uint32
 #pragma mark Descriptor Set Updates
 
 /** The type of data being supplied from a Vulkan descriptor update */
-enum class MVKDescriptorUpdateSourceType { Unsupported, Image, ImageSampler, Sampler, Buffer, TexelBuffer, InlineUniform };
+enum class MVKDescriptorUpdateSourceType { Unsupported, Image, ImageSampler, Sampler, Buffer, TexelBuffer, InlineUniform, AccelStructure };
 
 static MVKDescriptorUpdateSourceType getDescriptorUpdateSourceType(VkDescriptorType type) {
 	switch (type) {
@@ -786,8 +795,10 @@ static MVKDescriptorUpdateSourceType getDescriptorUpdateSourceType(VkDescriptorT
 		case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
 			return MVKDescriptorUpdateSourceType::InlineUniform;
 
-		case VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV:
 		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+			return MVKDescriptorUpdateSourceType::AccelStructure;
+
+		case VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV:
 		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
 		case VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM:
 		case VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM:
@@ -812,6 +823,10 @@ static const void* getDescriptorWriteSource(const VkWriteDescriptorSet& write, M
 			return write.pTexelBufferView;
 		case MVKDescriptorUpdateSourceType::InlineUniform:
 			return mvkFindStructInChain<VkWriteDescriptorSetInlineUniformBlock>(&write, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK)->pData;
+		case MVKDescriptorUpdateSourceType::AccelStructure: {
+			auto* asWrite = mvkFindStructInChain<VkWriteDescriptorSetAccelerationStructureKHR>(&write, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR);
+			return asWrite ? asWrite->pAccelerationStructures : nullptr;
+		}
 		case MVKDescriptorUpdateSourceType::Unsupported:
 			return nullptr;
 	}
@@ -825,6 +840,7 @@ static uint32_t getDescriptorUpdateStride(MVKDescriptorUpdateSourceType type) {
 		case MVKDescriptorUpdateSourceType::Buffer:        return sizeof(VkDescriptorBufferInfo);
 		case MVKDescriptorUpdateSourceType::TexelBuffer:   return sizeof(VkBufferView);
 		case MVKDescriptorUpdateSourceType::InlineUniform: return 1;
+		case MVKDescriptorUpdateSourceType::AccelStructure: return sizeof(VkAccelerationStructureKHR);
 		case MVKDescriptorUpdateSourceType::Unsupported:   return 0;
 	}
 }
@@ -891,6 +907,7 @@ template <> struct MVKArgBufEncoder<MVKArgumentBufferMode::Metal3> {
 	void setNullTexture(size_t index = 0) { dst[index].resource = {}; }
 	void setNullSampler(size_t index = 0) { dst[index].resource = {}; }
 	void setNullBuffer (size_t index = 0) { dst[index].gpuAddress = 0; }
+	void setAccelerationStructure(id<MTLAccelerationStructure> as, size_t index = 0) { if (as) { dst[index].resource = as.gpuResourceID; } else { dst[index].resource = {}; } }
 	void setTexture(MVKImageView* img, size_t index = 0) { setTexture(img ? img->getMTLTexture() : nil, index); }
 	void setSampler(MVKSampler* samp, size_t index = 0) { setSampler(samp ? samp->getMTLSamplerState() : nil, index); }
 	void setBuffer(const VkDescriptorBufferInfo* info, size_t index = 0) {
@@ -916,6 +933,7 @@ template <> struct MVKArgBufEncoder<MVKArgumentBufferMode::ArgEncoder> {
 	void setNullTexture(size_t index = 0) { [enc setTexture:nil atIndex:base + index]; }
 	void setNullSampler(size_t index = 0) { [enc setSamplerState:nil atIndex:base + index]; }
 	void setNullBuffer (size_t index = 0) { [enc setBuffer:nil offset:0 atIndex:base + index]; }
+	void setAccelerationStructure(id<MTLAccelerationStructure> as, size_t index = 0) { [enc setAccelerationStructure:as atIndex:base + index]; }
 	void setTexture(MVKImageView* img, size_t index = 0) {
 		[enc setTexture:img ? img->getMTLTexture() : nil atIndex:base + index];
 	}
@@ -980,8 +998,14 @@ static void writeDescriptorSetGPUBuffer(
 				break;
 
 			case MVKDescriptorGPULayout::Buffer:
-				assert(srcType == MVKDescriptorUpdateSourceType::Buffer);
-				enc.setBuffer(static_cast<const VkDescriptorBufferInfo*>(src));
+				if (srcType == MVKDescriptorUpdateSourceType::AccelStructure) {
+					auto asHandle = *static_cast<const VkAccelerationStructureKHR*>(src);
+					auto* mvkAS = reinterpret_cast<MVKAccelerationStructure*>(asHandle);
+					enc.setAccelerationStructure(mvkAS ? mvkAS->getMTLAccelerationStructure() : nil);
+				} else {
+					assert(srcType == MVKDescriptorUpdateSourceType::Buffer);
+					enc.setBuffer(static_cast<const VkDescriptorBufferInfo*>(src));
+				}
 				break;
 
 			case MVKDescriptorGPULayout::TexBufSoA:
@@ -1172,6 +1196,12 @@ static void writeDescriptorSetCPUBuffer(
 					case MVKDescriptorUpdateSourceType::TexelBuffer: {
 						auto* buf = *static_cast<MVKBufferView*const*>(src);
 						*desc = buf ? buf->getMTLTexture() : nil;
+						break;
+					}
+					case MVKDescriptorUpdateSourceType::AccelStructure: {
+						auto asHandle = *static_cast<const VkAccelerationStructureKHR*>(src);
+						auto* mvkAS = reinterpret_cast<MVKAccelerationStructure*>(asHandle);
+						*desc = mvkAS ? mvkAS->getMTLAccelerationStructure() : nil;
 						break;
 					}
 					default:
@@ -1441,6 +1471,15 @@ static void copyDescriptorSetBinding(
 
 					case MVKDescriptorGPULayout::Buffer:
 					case MVKDescriptorGPULayout::BufferAuxSize: {
+						if (srcBinding->descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+							// Acceleration structures are stored as a single OneID in the CPU buffer.
+							assert(cpu == MVKDescriptorCPULayout::OneID);
+							for (uint32_t i = 0; i < count; i++) {
+								id<MTLAccelerationStructure> as = *reinterpret_cast<id<MTLAccelerationStructure>*>(src + i * cpuStride);
+								[dstEnc setAccelerationStructure:as atIndex:dst + i];
+							}
+							break;
+						}
 						size_t offsetOffset;
 						if (cpu == MVKDescriptorCPULayout::TwoID2Meta) {
 							src += offsetof(MVKCPUDescriptorTwoID2Meta, b); // Buffer is always second ID

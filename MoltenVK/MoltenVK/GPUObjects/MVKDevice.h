@@ -952,6 +952,15 @@ public:
 	 */
 	NSArray<id<MTLAccelerationStructure>>* getAccelerationStructureList();
 
+	/**
+	 * Returns the list of currently registered Metal acceleration structures.
+	 * Used to make bottom-level structures resident when a top-level structure
+	 * is consumed by a ray query on the per-encode useResource path.
+	 */
+	MVKArrayRef<id<MTLAccelerationStructure>> getAllAccelerationStructures() {
+		return MVKArrayRef<id<MTLAccelerationStructure>>(_allAccStructs.data(), _allAccStructs.size());
+	}
+
 	/** Returns the GPU sample counter used for timestamps. */
 	id<MTLCounterSet> getTimestampMTLCounterSet() { return _physicalDevice->_timestampMTLCounterSet; }
 

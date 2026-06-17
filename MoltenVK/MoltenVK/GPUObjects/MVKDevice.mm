@@ -326,6 +326,12 @@ void MVKPhysicalDevice::getFeatures(VkPhysicalDeviceFeatures2* features) {
 				accStructFeatures->descriptorBindingAccelerationStructureUpdateAfterBind = false;
 				break;
 			}
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR: {
+				auto* rayQueryFeatures = (VkPhysicalDeviceRayQueryFeaturesKHR*)next;
+				// Ray query requires acceleration structure support (and, per spec, buffer device address).
+				rayQueryFeatures->rayQuery = _metalFeatures.accelerationStructures;
+				break;
+			}
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES:
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT: {
 				auto* bufferDeviceAddressFeatures = (VkPhysicalDeviceBufferDeviceAddressFeatures*)next;

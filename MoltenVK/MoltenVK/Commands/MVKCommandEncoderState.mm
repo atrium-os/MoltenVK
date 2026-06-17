@@ -63,6 +63,7 @@ struct MVKFragmentBinder {
 	static SEL selSetOffset()  { return @selector(setFragmentBufferOffset:atIndex:); }
 	static SEL selSetTexture() { return @selector(setFragmentTexture:atIndex:); }
 	static SEL selSetSampler() { return @selector(setFragmentSamplerState:atIndex:); }
+	static SEL selSetAccelerationStructure() { return @selector(setFragmentAccelerationStructure:atBufferIndex:); }
 	static MVKResourceBinder::UseResource useResource() { return useResourceGraphics; }
 	static void setBuffer(id<MTLRenderCommandEncoder> encoder, id<MTLBuffer> buffer, NSUInteger offset, NSUInteger index) {
 		[encoder setFragmentBuffer:buffer offset:offset atIndex:index];
@@ -87,6 +88,7 @@ struct MVKVertexBinder {
 	static SEL selSetOffset()  { return @selector(setVertexBufferOffset:atIndex:); }
 	static SEL selSetTexture() { return @selector(setVertexTexture:atIndex:); }
 	static SEL selSetSampler() { return @selector(setVertexSamplerState:atIndex:); }
+	static SEL selSetAccelerationStructure() { return @selector(setVertexAccelerationStructure:atBufferIndex:); }
 	static MVKResourceBinder::UseResource useResource() { return useResourceGraphics; }
 	static SEL selSetBufferDynamic() { return @selector(setVertexBuffer:offset:attributeStride:atIndex:); }
 	static SEL selSetOffsetDynamic() { return @selector(setVertexBufferOffset:attributeStride:atIndex:); }
@@ -119,6 +121,7 @@ struct MVKComputeBinder {
 	static SEL selSetOffset()  { return @selector(setBufferOffset:atIndex:); }
 	static SEL selSetTexture() { return @selector(setTexture:atIndex:); }
 	static SEL selSetSampler() { return @selector(setSamplerState:atIndex:); }
+	static SEL selSetAccelerationStructure() { return @selector(setAccelerationStructure:atBufferIndex:); }
 	static MVKResourceBinder::UseResource useResource() { return useResourceCompute; }
 	static SEL selSetBufferDynamic() { return @selector(setBuffer:offset:attributeStride:atIndex:); }
 	static SEL selSetOffsetDynamic() { return @selector(setBufferOffset:attributeStride:atIndex:); }
@@ -474,6 +477,14 @@ static void executeBindOp(id<MTLCommandEncoder> encoder,
 				break;
 			}
 
+			case MVKDescriptorBindOperationCode::BindAccelerationStructure:
+				// Bind the acceleration structure directly, and ensure it (and thus its referenced
+				// bottom-level structures, which Metal makes resident with it) is resident.
+				binder.setAccelerationStructure(encoder, static_cast<id<MTLAccelerationStructure>>(resource), target + i);
+				if (resource)
+					mvkEncoder.getState().mtlShared()._useResource.addImmediate(resource, encoder, binder.useResource, useResourceStage, false);
+				break;
+
 			case MVKDescriptorBindOperationCode::BindTexture:
 				bindTexture(encoder, static_cast<id<MTLTexture>>(resource), target + i, exists, bindings, binder);
 				break;
@@ -564,6 +575,7 @@ static void executeBindOps(id<MTLCommandEncoder> encoder,
 			CASE(BindBytes)
 			CASE(BindBuffer)
 			CASE(BindBufferDynamic)
+			CASE(BindAccelerationStructure)
 			CASE(BindTexture)
 			CASE(BindSampler)
 			CASE(BindBufferWithLiveCheck)
@@ -580,6 +592,16 @@ static void executeBindOps(id<MTLCommandEncoder> encoder,
 					bindSampler(encoder, samplers[i]->getMTLSamplerState(), target + i, exists, bindings, binder);
 				break;
 			}
+		}
+
+		// A top-level acceleration structure references bottom-level structures that Metal
+		// requires to be resident, but which aren't tracked individually in the descriptor set.
+		// On the per-encode useResource path (no global residency set), make every acceleration
+		// structure on the device resident when a TLAS is used. (With a residency set, each
+		// acceleration structure is made resident at creation; see MVKAccelerationStructure.)
+		if (isUseResource(op.opcode) && binding.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+			for (id<MTLAccelerationStructure> as : mvkEncoder.getDevice()->getAllAccelerationStructures())
+				mvkEncoder.getState().mtlShared()._useResource.add(as, useResourceStage, false);
 		}
 	}
 
