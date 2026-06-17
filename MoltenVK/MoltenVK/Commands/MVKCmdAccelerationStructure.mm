@@ -70,6 +70,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
             MTLAccelerationStructureDescriptor* descriptor = mvkDstAccStruct->newMTLAccelerationStructureDescriptor(buildInfo, entry.ranges.data(), nullptr);
 
             id<MTLFence> fence = nil;
+            const MVKMTLBufferAllocation* tmpBuff = nullptr;
             if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
                 // Only one geometry, validated in populateMTLDescriptor
 
@@ -82,7 +83,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 
                 // Allocate a transient buffer to store converted instance data
                 NSUInteger tmpBuffSize = sizeof(MTLAccelerationStructureInstanceDescriptor) * ranges[0].primitiveCount;
-                const MVKMTLBufferAllocation* tmpBuff = cmdEncoder->getTempMTLBuffer(tmpBuffSize, true);
+                tmpBuff = cmdEncoder->getTempMTLBuffer(tmpBuffSize, true);
 
                 ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBuffer = tmpBuff->_mtlBuffer;
                 ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBufferOffset = tmpBuff->_offset;
@@ -128,6 +129,81 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 
             if (fence)
                 [accStructEncoder waitForFence:fence];
+
+            // Make the resources the build references resident on this encoder.
+            //
+            // The acceleration-structure command encoder does NOT participate in MoltenVK's
+            // argument-buffer residency-set bookkeeping the way render/compute encoders do, and
+            // Metal's automatic per-command-buffer resource tracking adds every referenced
+            // resource to an IOGPU resource list at commit. Heap placement sub-allocations (the
+            // dst AS, the BLAS storage buffers, the instanced BLAS acceleration structures, the
+            // geometry/instance input buffers) have no independent IOGPU backing, so that
+            // auto-add faults in IOGPUResourceListAddResource. We pre-declare the resources via
+            // their parent heaps (useHeap:, the correct residency unit for placement-heap
+            // resources) and fall back to useResource: for any non-heap-backed buffers (e.g. the
+            // transient instance-conversion buffer). De-duplicated to keep the set small.
+            NSMutableSet* usedHeaps = [NSMutableSet set];
+            NSMutableSet* usedResources = [NSMutableSet set];
+            auto useHeapForResource = [&](id<MTLHeap> heap, id resource, MTLResourceUsage usage) {
+                if (heap) {
+                    if (![usedHeaps containsObject:heap]) {
+                        [usedHeaps addObject:heap];
+                        [accStructEncoder useHeap:heap];
+                    }
+                } else if (resource) {
+                    if (![usedResources containsObject:resource]) {
+                        [usedResources addObject:resource];
+                        [accStructEncoder useResource:resource usage:usage];
+                    }
+                }
+            };
+
+            // dst AS storage heap (round 1).
+            useHeapForResource(mvkDstAccStruct->getMTLHeap(), dstAccStruct, MTLResourceUsageRead | MTLResourceUsageWrite);
+
+            // scratch buffer.
+            useHeapForResource(mvkBuffer->getMTLHeap(), scratchBuffer, MTLResourceUsageRead | MTLResourceUsageWrite);
+
+            if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
+                // TLAS: the build encoder reads the converted-instance descriptor buffer (the
+                // transient tmpBuff assigned to descriptor.instanceDescriptorBuffer above), not
+                // the original VkInstance input buffer (that is consumed by the convert compute
+                // encoder). tmpBuff is a pooled MTLBuffer, typically not heap-backed → useResource.
+                if (tmpBuff && tmpBuff->_mtlBuffer)
+                    useHeapForResource(tmpBuff->_mtlBuffer.heap, tmpBuff->_mtlBuffer, MTLResourceUsageRead);
+
+                // The instanced BLAS handles referenced by the TLAS descriptor. These are the
+                // device's currently-built acceleration structures (the same list the descriptor
+                // was populated from in newMTLAccelerationStructureDescriptor).
+                NSArray<id<MTLAccelerationStructure>>* blasList = mvkDevice->getAccelerationStructureList();
+                for (id<MTLAccelerationStructure> blas in blasList) {
+                    // Each BLAS is a placement-heap sub-allocation (created via
+                    // [heap newAccelerationStructureWithSize:offset:]). Cover it via its parent
+                    // heap (MTLResource.heap) so Metal never tries to add the bare sub-allocation
+                    // to the IOGPU resource list; useResource: as a safety net if heap is nil.
+                    useHeapForResource(blas.heap, blas, MTLResourceUsageRead);
+                }
+                [blasList release];
+            } else {
+                // BLAS: the geometry input buffers (vertex / index / transform / AABB).
+                for (uint32_t gi = 0; gi < buildInfo.geometryCount; gi++) {
+                    const VkAccelerationStructureGeometryKHR& geom = buildInfo.pGeometries[gi];
+                    if (geom.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
+                        const VkAccelerationStructureGeometryTrianglesDataKHR& tri = geom.geometry.triangles;
+                        for (uint64_t bda : { tri.vertexData.deviceAddress, tri.indexData.deviceAddress, tri.transformData.deviceAddress }) {
+                            if (!bda) continue;
+                            MVKBuffer* b = mvkDevice->getBufferAtAddress(bda);
+                            if (b) useHeapForResource(b->getMTLHeap(), b->getMTLBuffer(), MTLResourceUsageRead);
+                        }
+                    } else if (geom.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR) {
+                        uint64_t bda = geom.geometry.aabbs.data.deviceAddress;
+                        if (bda) {
+                            MVKBuffer* b = mvkDevice->getBufferAtAddress(bda);
+                            if (b) useHeapForResource(b->getMTLHeap(), b->getMTLBuffer(), MTLResourceUsageRead);
+                        }
+                    }
+                }
+            }
 
             [accStructEncoder buildAccelerationStructure:dstAccStruct
                                               descriptor:descriptor

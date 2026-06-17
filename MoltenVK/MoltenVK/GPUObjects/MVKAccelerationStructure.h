@@ -75,6 +75,9 @@ public:
     
     /** Returns the Metal buffer using the same memory as the acceleration structure*/
     id<MTLBuffer> getMTLBuffer() const { return _buffer; }
+
+    /** Returns the placement MTLHeap backing the acceleration structure (residency unit). */
+    id<MTLHeap> getMTLHeap() const { return _heap; }
     
 	/** Constructs an empty instance for the specified device. */
     MVKAccelerationStructure(MVKDevice* device);
