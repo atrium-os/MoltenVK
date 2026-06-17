@@ -26,10 +26,12 @@
 #include "MVKSmallVector.h"
 #include "MVKPixelFormats.h"
 #include "MVKOSExtensions.h"
+#include "MVKAddressMap.h"
 #include "mvk_datatypes.hpp"
 #include <shared_mutex>
 #include <string>
 #include <mutex>
+#include <unordered_map>
 #include <os/lock.h>
 
 #import <Metal/Metal.h>
@@ -71,12 +73,16 @@ class MVKCommandPool;
 class MVKCommandEncoder;
 class MVKCommandResourceFactory;
 class MVKPrivateDataSlot;
+class MVKAccelerationStructure;
 struct MVKUseResourceHelper;
 enum class MVKResourceUsageStages : uint8_t;
 
 
 /** The buffer index to use for vertex content. */
 static constexpr uint32_t kMVKVertexContentBufferIndex = 0;
+
+/** The base address to use for fake acceleration structure device addresses */
+static constexpr uint64_t kMVKAccelerationStructureBaseAddr = 0x133700000000;
 
 // Parameters to define the sizing of inline collections
 static constexpr uint32_t   kMVKQueueFamilyCount = 4;
@@ -532,6 +538,8 @@ typedef struct MVKMTLBlitEncoder {
 	id<MTLCommandBuffer> mtlCmdBuffer = nil;
 } MVKMTLBlitEncoder;
 
+typedef std::pair<uint64_t, uint64_t> MVKBufferAddressRange;
+
 // Arbitrary, after that many barriers with a given source pipeline stage we will wrap around
 // and potentially introduce extra synchronization on previous invocations of the same stage.
 static const uint32_t kMVKBarrierFenceCount = 64;
@@ -704,6 +712,9 @@ public:
 								 uint64_t* pTimestamps,
 								 uint64_t* pMaxDeviation);
 
+    /** Returns whether or not the device supports acceleration structures */
+    VkAccelerationStructureCompatibilityKHR getAccelerationStructureCompatibility(const VkAccelerationStructureVersionInfoKHR* pVersionInfo);
+
     /** Returns the granularity of the dynamic rendering optimal render area.  */
     VkExtent2D getDynamicRenderAreaGranularity();
 
@@ -778,6 +789,11 @@ public:
 	                                           const VkAllocationCallbacks* pAllocator);
 	void destroyPipelineLayout(MVKPipelineLayout* mvkPLL,
 							   const VkAllocationCallbacks* pAllocator);
+
+    MVKAccelerationStructure* createAccelerationStructure(const VkAccelerationStructureCreateInfoKHR* pCreateInfo,
+                                                          const VkAllocationCallbacks*                pAllocator);
+    void destroyAccelerationStructure(MVKAccelerationStructure*     mvkAccStruct,
+                                      const VkAllocationCallbacks*  pAllocator);
 
     /**
      * Template function that creates count number of pipelines of type PipelineType,
@@ -869,6 +885,21 @@ public:
 	/** Removes the specified timeline semaphore. */
 	void removeTimelineSemaphore(MVKTimelineSemaphore* sem4, uint64_t value);
 
+	/** Adds the specified acceleration structure to the address map, so it can be referenced elsewhere */
+	MVKAccelerationStructure* addAccelerationStructure(MVKAccelerationStructure* accStruct);
+
+	/** Removes the specified acceleration structure from the address map */
+	void removeAccelerationStructure(MVKAccelerationStructure* accStruct);
+
+	/** Tracks or untracks a buffer address in the registry to be visible to getBufferAtAddress. */
+	void trackBufferAddress(MVKBuffer* mvkBuff, bool track);
+
+	/** Returns a pointer to the buffer at the provided address */
+	MVKBuffer* getBufferAtAddress(uint64_t address);
+
+	/** Returns a pointer to the acceleration structure at the provided address */
+	MVKAccelerationStructure* getAccelerationStructureAtAddress(uint64_t address);
+
 	/** Applies the specified global memory barrier to all resource issued by this device. */
 	void applyMemoryBarrier(MVKPipelineBarrier& barrier,
 							MVKCommandEncoder* cmdEncoder,
@@ -914,6 +945,12 @@ public:
 
 	/** Returns a visibility buffer to the shared pool. */
 	void returnVisibilityBuffer(MVKVisibilityBuffer&& buffer);
+
+	/**
+	 * Returns a local copy of the list of currently registered acceleration structures.
+	 * Caller is responsible for releasing the returned object.
+	 */
+	NSArray<id<MTLAccelerationStructure>>* getAccelerationStructureList();
 
 	/** Returns the GPU sample counter used for timestamps. */
 	id<MTLCounterSet> getTimestampMTLCounterSet() { return _physicalDevice->_timestampMTLCounterSet; }
@@ -1085,6 +1122,9 @@ protected:
 	MVKSmallVector<MVKSmallVector<MVKQueue*, kMVKQueueCountPerQueueFamily>, kMVKQueueFamilyCount> _queuesByQueueFamilyIndex;
 	MVKSmallVector<MVKResource*> _resources;
 	MVKSmallVector<MVKBuffer*> _gpuAddressableBuffers;
+	MVKAddressMap* _gpuBufferAddressMap;
+	std::unordered_map<uint64_t, MVKAccelerationStructure*> _gpuAccStructAddressMap;
+	MVKSmallVector<id<MTLAccelerationStructure>> _allAccStructs;
 	MVKSmallVector<MVKPrivateDataSlot*> _privateDataSlots;
 	MVKSmallVector<bool> _privateDataSlotsAvailability;
 	MVKSmallVector<MVKSemaphoreImpl*> _awaitingSemaphores;
@@ -1095,6 +1135,7 @@ protected:
 	std::mutex _sem4Lock;
     std::mutex _perfLock;
 	std::mutex _vizLock;
+	std::mutex _accLock;
 	std::string _capturePipeFileName;
 	id<MTLSamplerState> _defaultMTLSamplerState = nil;
 	id<MTLBuffer> _dummyBlitMTLBuffer = nil;

@@ -501,4 +501,33 @@ kernel void convertUint8IndicesRaw(device uint8_t* src [[ buffer(0) ]],
 	uint8_t idx = src[pos];
 	dst[pos] = idx;
 }
+
+typedef struct {
+    float3x4 transform; // Row major
+    uint32_t packedData1;
+    uint32_t packedData2;
+    uint32_t addressBitsLow;
+    uint32_t addressBitsHigh;
+} __attribute__((packed)) VkAccStructInstance;
+
+kernel void cmdBuildAccelerationStructureConvertBuffers(const device char* srcBuff [[buffer(0)]],
+                                                        device MTLAccelerationStructureUserIDInstanceDescriptor* destBuff [[buffer(1)]],
+                                                        constant uint32_t& srcStride [[buffer(2)]],
+                                                        constant uint32_t& instanceCount [[buffer(3)]],
+                                                        uint idx [[thread_position_in_grid]]) {
+    if (idx >= instanceCount) { return; }
+    const device auto& src = *reinterpret_cast<const device VkAccStructInstance*>(srcBuff + idx * srcStride);
+    device auto& dst = destBuff[idx];
+    dst.mask = src.packedData1 >> 24;
+    dst.userID = src.packedData1 & ((1 << 24) - 1);
+    dst.options = (MTLAccelerationStructureInstanceOptions)((src.packedData2 >> 24) & 0xF);
+    dst.intersectionFunctionTableOffset = src.packedData2 & ((1 << 24) - 1);
+    dst.accelerationStructureIndex = src.addressBitsLow;
+
+    // Transpose the row-major matrix to column-major
+    dst.transformationMatrix[0] = float3(src.transform[0][0], src.transform[1][0], src.transform[2][0]);
+    dst.transformationMatrix[1] = float3(src.transform[0][1], src.transform[1][1], src.transform[2][1]);
+    dst.transformationMatrix[2] = float3(src.transform[0][2], src.transform[1][2], src.transform[2][2]);
+    dst.transformationMatrix[3] = float3(src.transform[0][3], src.transform[1][3], src.transform[2][3]);
+}
 )";

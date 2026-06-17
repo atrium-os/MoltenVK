@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		FACE00112A5857600040D001 /* MVKCmdAccelerationStructure.mm in Sources */ = {isa = PBXBuildFile; fileRef = FACE00012A5857600040D001 /* MVKCmdAccelerationStructure.mm */; };
+		FACE00122A5857600040D001 /* MVKAccelerationStructure.mm in Sources */ = {isa = PBXBuildFile; fileRef = FACE00022A5857600040D001 /* MVKAccelerationStructure.mm */; };
+		FACE00132A5857600040D001 /* MVKAddressMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FACE00032A5857600040D001 /* MVKAddressMap.cpp */; };
+		FACE00142A5857600040D001 /* MVKCmdAccelerationStructure.h in Headers */ = {isa = PBXBuildFile; fileRef = FACE00042A5857600040D001 /* MVKCmdAccelerationStructure.h */; };
+		FACE00152A5857600040D001 /* MVKAccelerationStructure.h in Headers */ = {isa = PBXBuildFile; fileRef = FACE00052A5857600040D001 /* MVKAccelerationStructure.h */; };
+		FACE00162A5857600040D001 /* MVKAddressMap.h in Headers */ = {isa = PBXBuildFile; fileRef = FACE00062A5857600040D001 /* MVKAddressMap.h */; };
 		16089AF42C924621003CF426 /* MVKStateTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = 16089AF22C924621003CF426 /* MVKStateTracking.h */; };
 		16089AF62C924621003CF426 /* MVKStateTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = 16089AF22C924621003CF426 /* MVKStateTracking.h */; };
 		16089AF82C924621003CF426 /* MVKStateTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = 16089AF22C924621003CF426 /* MVKStateTracking.h */; };
@@ -624,6 +630,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		FACE00012A5857600040D001 /* MVKCmdAccelerationStructure.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = MVKCmdAccelerationStructure.mm; sourceTree = "<group>"; };
+		FACE00042A5857600040D001 /* MVKCmdAccelerationStructure.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MVKCmdAccelerationStructure.h; sourceTree = "<group>"; };
+		FACE00022A5857600040D001 /* MVKAccelerationStructure.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = MVKAccelerationStructure.mm; sourceTree = "<group>"; };
+		FACE00052A5857600040D001 /* MVKAccelerationStructure.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MVKAccelerationStructure.h; sourceTree = "<group>"; };
+		FACE00032A5857600040D001 /* MVKAddressMap.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MVKAddressMap.cpp; sourceTree = "<group>"; };
+		FACE00062A5857600040D001 /* MVKAddressMap.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MVKAddressMap.h; sourceTree = "<group>"; };
 		16089AF22C924621003CF426 /* MVKStateTracking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MVKStateTracking.h; sourceTree = "<group>"; };
 		1667EB802D5BDEF500ECF248 /* MVKInlineArray.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MVKInlineArray.h; sourceTree = "<group>"; };
 		1667EB822D5BDEF500ECF248 /* MVKInlineObjectConstructor.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MVKInlineObjectConstructor.h; sourceTree = "<group>"; };
@@ -881,6 +893,8 @@
 		A94FB76B1C7DFB4800632CA3 /* Commands */ = {
 			isa = PBXGroup;
 			children = (
+				FACE00042A5857600040D001 /* MVKCmdAccelerationStructure.h */,
+				FACE00012A5857600040D001 /* MVKCmdAccelerationStructure.mm */,
 				A99C90EC229455B200A061DA /* MVKCmdDebug.h */,
 				A99C90ED229455B300A061DA /* MVKCmdDebug.mm */,
 				A9096E5C1F81E16300DFBEA6 /* MVKCmdDispatch.h */,
@@ -918,6 +932,8 @@
 		A94FB77E1C7DFB4800632CA3 /* GPUObjects */ = {
 			isa = PBXGroup;
 			children = (
+				FACE00052A5857600040D001 /* MVKAccelerationStructure.h */,
+				FACE00022A5857600040D001 /* MVKAccelerationStructure.mm */,
 				A94FB77F1C7DFB4800632CA3 /* MVKBuffer.h */,
 				A94FB7801C7DFB4800632CA3 /* MVKBuffer.mm */,
 				A94FB7811C7DFB4800632CA3 /* MVKDescriptorSet.h */,
@@ -985,6 +1001,8 @@
 		A98149401FB6A3F7005F00B4 /* Utility */ = {
 			isa = PBXGroup;
 			children = (
+				FACE00032A5857600040D001 /* MVKAddressMap.cpp */,
+				FACE00062A5857600040D001 /* MVKAddressMap.h */,
 				A98149421FB6A3F7005F00B4 /* MVKBaseObject.h */,
 				A98149411FB6A3F7005F00B4 /* MVKBaseObject.mm */,
 				A9D7104E25CDE05E00E38106 /* MVKBitArray.h */,
@@ -1276,6 +1294,9 @@
 			isa = PBXHeadersBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FACE00142A5857600040D001 /* MVKCmdAccelerationStructure.h in Headers */,
+				FACE00152A5857600040D001 /* MVKAccelerationStructure.h in Headers */,
+				FACE00162A5857600040D001 /* MVKAddressMap.h in Headers */,
 				A909F660213B190700FCD6BE /* MVKExtensions.h in Headers */,
 				A94FB7B51C7DFB4800632CA3 /* vk_mvk_moltenvk.h in Headers */,
 				A987B66B289AFB8C00F933C8 /* MVKDeviceFeatureStructs.def in Headers */,
@@ -2198,6 +2219,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FACE00112A5857600040D001 /* MVKCmdAccelerationStructure.mm in Sources */,
+				FACE00122A5857600040D001 /* MVKAccelerationStructure.mm in Sources */,
+				FACE00132A5857600040D001 /* MVKAddressMap.cpp in Sources */,
 				4553AEFC2251617100E8EBCD /* MVKBlockObserver.m in Sources */,
 				A9E53E0021064F84002781DD /* MTLRenderPipelineDescriptor+MoltenVK.m in Sources */,
 				A94FB80B1C7DFB4800632CA3 /* MVKResource.mm in Sources */,
