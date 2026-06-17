@@ -1022,8 +1022,11 @@ public:
 		        (void*)allocation);
 		fflush(stderr);
 		@synchronized(_residencySet) {
+			// Only ADD here, never commit. Committing a residency set while a command
+			// encoder is open (heaps get added during vkCmdBuildAccelerationStructures
+			// recording) traps. Defer the commit to queue submit, where no encoder is open.
 			[_residencySet addAllocation: allocation];
-			[_residencySet commit];
+			_residencySetDirty = true;
 		}
 	}
 #endif
@@ -1034,10 +1037,27 @@ public:
 	void removeResidency(id<MTLAllocation> allocation) {
 		@synchronized(_residencySet) {
 			[_residencySet removeAllocation:allocation];
-			[_residencySet commit];
+			_residencySetDirty = true;
 		}
 	}
 #endif
+
+	/**
+	 * Commits the residency set if it has pending add/remove changes. Must be called
+	 * with NO command encoder open (i.e. at queue submit, before committing the
+	 * MTLCommandBuffer that uses the resources). Thread-safe.
+	 */
+	void commitResidencySetIfDirty() {
+#if MVK_XCODE_16
+		if (!_residencySet) return;
+		@synchronized(_residencySet) {
+			if (_residencySetDirty) {
+				[_residencySet commit];
+				_residencySetDirty = false;
+			}
+		}
+#endif
+	}
 
 	void addResidencySet(id<MTLCommandQueue> queue) {
 #if MVK_XCODE_16
@@ -1157,6 +1177,7 @@ protected:
 	id<MTLBuffer> _dummyBlitMTLBuffer = nil;
 #if MVK_XCODE_16
 	id<MTLResidencySet> _residencySet = nil;
+	bool _residencySetDirty = false;
 #endif
 	uint32_t _visibilityBufferCount = 0;
 	int _capturePipeFileDesc = -1;

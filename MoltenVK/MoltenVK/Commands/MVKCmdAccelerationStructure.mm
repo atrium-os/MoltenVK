@@ -110,11 +110,12 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                                             3);
 
                 // Declare the buffers this convert dispatch touches as resident on THIS encoder.
-                // tmpBuff is the private/transient pool buffer that is no longer added to the
-                // global residency set (see MVKMTLBufferAllocationPool::addMTLBuffer) — without an
-                // explicit useResource: here it would page-fault on write. The instances input
-                // buffer is a normal device buffer; cover it via its parent heap when placement-
-                // heap-backed, else useResource:.
+                // tmpBuff (the private/transient pool buffer) IS in the global residency set
+                // (see MVKMTLBufferAllocationPool::addMTLBuffer), but the encoder still needs an
+                // explicit useResource:/useHeap: to express the per-encoder usage and the
+                // read-write dependency between the convert and build encoders; without it the
+                // write would page-fault. The instances input buffer is a normal device buffer;
+                // cover it via its parent heap when placement-heap-backed, else useResource:.
                 if (tmpBuff->_mtlBuffer.heap) {
                     [mtlConvertEncoder useHeap: tmpBuff->_mtlBuffer.heap];
                 } else {
