@@ -175,6 +175,12 @@ id<MTLBuffer> MVKBuffer::getMTLBuffer() {
 		                                   options: mvkMTLResourceOptions(MTLStorageModePrivate, MTLCPUCacheModeDefaultCache)
 		                                    offset: 0];
 
+		// The acceleration-structure storage buffer (and the acceleration structure placed
+		// in it) live in this dedicated placement heap. With a global residency set, the
+		// heap — not its sub-allocations — is the residency unit, so make the heap resident.
+		_device->makeResident(_mtlHeap);
+		_device->getLiveResources().add(_mtlBuffer);
+
 		propagateDebugName();
 		return _mtlBuffer;
 	}
@@ -280,8 +286,14 @@ void MVKBuffer::detachMemory() {
 		live.remove(buf);
 		[buf release];
 	}
-	[_mtlHeap release];
-	_mtlHeap = nil;
+	if (id<MTLHeap> heap = _mtlHeap) {
+		_mtlHeap = nil;
+		// Dedicated acceleration-structure-storage heaps are made resident in getMTLBuffer();
+		// drop that residency before releasing. For heaps that were never made resident,
+		// removeAllocation: is a no-op, so this is safe in all paths.
+		_device->removeResidency(heap);
+		[heap release];
+	}
 }
 
 

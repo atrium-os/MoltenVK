@@ -215,24 +215,31 @@ MVKAccelerationStructure::MVKAccelerationStructure(MVKDevice* device,
     MVKAssert(heap, "Buffer passed to MVKAccelerationStructure must be backed by a MTLHeap");
     
     _size = pCreateInfo->size;
+    _heap = heap;
     _buffer = buff->getMTLBuffer();
     _accelerationStructure = [heap newAccelerationStructureWithSize:pCreateInfo->size
                                                              offset:buff->getMTLHeapOffset()];
 
     // When the device uses a global residency set (Metal 3, macOS 15+), the acceleration
-    // structure object itself must be made resident so it can be read by ray queries.
-    // Otherwise residency is handled per-encode via useResource (see MVKPipeline bind script).
+    // structure must be resident so it can be written by the build encoder and read by ray
+    // queries. The acceleration structure is a placement-heap sub-allocation: it has no
+    // independent residency backing of its own, so adding the sub-allocation to the residency
+    // set produces a list node whose underlying IOGPU resource is nil — which faults inside
+    // IOGPUResourceListAddResource when the set is committed at submit. The residency of a
+    // placement-heap resource is governed by its parent heap, so we make the *heap* resident.
+    // (Otherwise residency is handled per-encode via useResource; see MVKPipeline bind script.)
 #if MVK_XCODE_16
-    if (_accelerationStructure && getDevice()->hasResidencySet())
-        getDevice()->makeResident(_accelerationStructure);
+    if (_heap && getDevice()->hasResidencySet())
+        getDevice()->makeResident(_heap);
 #endif
 }
 
 MVKAccelerationStructure::~MVKAccelerationStructure() {
 #if MVK_XCODE_16
-    if (_accelerationStructure && getDevice()->hasResidencySet())
-        getDevice()->removeResidency(_accelerationStructure);
+    if (_heap && getDevice()->hasResidencySet())
+        getDevice()->removeResidency(_heap);
 #endif
     [_accelerationStructure release];
     _accelerationStructure = nil;
+    _heap = nil;
 }
