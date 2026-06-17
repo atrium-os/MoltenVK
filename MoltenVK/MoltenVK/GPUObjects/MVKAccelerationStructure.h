@@ -90,6 +90,7 @@ protected:
     void propagateDebugName() override {}
     
     id<MTLBuffer> _buffer = nil;
+    id<MTLHeap> _heap = nil;
     id<MTLAccelerationStructure> _accelerationStructure = nil;
     
     bool _allowUpdate = false;
