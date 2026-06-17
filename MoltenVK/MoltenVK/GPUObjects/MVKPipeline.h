@@ -48,6 +48,7 @@ enum class MVKDescriptorBindOperationCode : uint8_t {
 	BindBytes,
 	BindBuffer,
 	BindBufferDynamic,
+	BindAccelerationStructure,
 	BindTexture,
 	BindSampler,
 	BindImmutableSampler,

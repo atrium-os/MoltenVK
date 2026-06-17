@@ -218,9 +218,21 @@ MVKAccelerationStructure::MVKAccelerationStructure(MVKDevice* device,
     _buffer = buff->getMTLBuffer();
     _accelerationStructure = [heap newAccelerationStructureWithSize:pCreateInfo->size
                                                              offset:buff->getMTLHeapOffset()];
+
+    // When the device uses a global residency set (Metal 3, macOS 15+), the acceleration
+    // structure object itself must be made resident so it can be read by ray queries.
+    // Otherwise residency is handled per-encode via useResource (see MVKPipeline bind script).
+#if MVK_XCODE_16
+    if (_accelerationStructure && getDevice()->hasResidencySet())
+        getDevice()->makeResident(_accelerationStructure);
+#endif
 }
 
 MVKAccelerationStructure::~MVKAccelerationStructure() {
+#if MVK_XCODE_16
+    if (_accelerationStructure && getDevice()->hasResidencySet())
+        getDevice()->removeResidency(_accelerationStructure);
+#endif
     [_accelerationStructure release];
     _accelerationStructure = nil;
 }
