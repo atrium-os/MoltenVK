@@ -4967,7 +4967,16 @@ void MVKDevice::returnVisibilityBuffer(MVKVisibilityBuffer&& buffer) {
 
 NSArray<id<MTLAccelerationStructure>>* MVKDevice::getAccelerationStructureList() {
     std::lock_guard<std::mutex> lock(_accLock);
-    return [[NSArray alloc] initWithObjects:_allAccStructs.data() count:_allAccStructs.size()];
+    // Skip nil handles: a referenced AS may exist (vkCreate'd) but not yet be
+    // built — e.g. a TLAS getBuildSizes query before any build encode — and
+    // NSArray rejects nil, so a raw initWithObjects: crashes. Sizing only
+    // needs the instance count; the real handles are valid by build time.
+    NSMutableArray<id<MTLAccelerationStructure>>* list = [NSMutableArray arrayWithCapacity: _allAccStructs.size()];
+    for (size_t i = 0; i < _allAccStructs.size(); i++) {
+        id<MTLAccelerationStructure> as = _allAccStructs[i];
+        if (as) { [list addObject: as]; }
+    }
+    return list;
 }
 
 id<MTLSamplerState> MVKDevice::getDefaultMTLSamplerState() {
