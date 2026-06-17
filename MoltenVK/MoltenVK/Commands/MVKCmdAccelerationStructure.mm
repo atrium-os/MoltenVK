@@ -70,7 +70,16 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
             MTLAccelerationStructureDescriptor* descriptor = mvkDstAccStruct->newMTLAccelerationStructureDescriptor(buildInfo, entry.ranges.data(), nullptr);
 
             id<MTLFence> fence = nil;
-            const MVKMTLBufferAllocation* tmpBuff = nullptr;
+            // Dedicated placement-MTLHeap-backed Private buffer for the converted instance data.
+            // This REPLACES the pooled getTempMTLBuffer transient: a pooled buffer is a standalone
+            // [device newBufferWithLength:] (heap == nil) and, on this AS path, cannot be safely
+            // added to the global residency set — it faults in IOGPUResourceListAddResource at
+            // submit (rounds 1-6). The fix mirrors the working dst-AS / BLAS-storage pattern
+            // (round 2): a placement MTLHeap is the residency unit, its sub-allocation buffer is
+            // covered by useHeap:, and the heap+buffer are released in a command-buffer completion
+            // handler so they outlive GPU execution.
+            id<MTLHeap> tmpHeap = nil;
+            id<MTLBuffer> tmpBuff = nil;
             if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
                 // Only one geometry, validated in populateMTLDescriptor
 
@@ -81,12 +90,30 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 MVKBuffer* mvkInstancesBuffer = cmdEncoder->getDevice()->getBufferAtAddress(instancesBDA);
                 NSUInteger bOffset = (instancesBDA - mvkInstancesBuffer->getMTLBufferGPUAddress()) + mvkInstancesBuffer->getMTLBufferOffset();
 
-                // Allocate a transient buffer to store converted instance data
+                // Allocate a dedicated placement-heap-backed Private buffer to store converted
+                // instance data. Heap is the residency unit; buffer is sub-allocated at offset 0.
                 NSUInteger tmpBuffSize = sizeof(MTLAccelerationStructureInstanceDescriptor) * ranges[0].primitiveCount;
-                tmpBuff = cmdEncoder->getTempMTLBuffer(tmpBuffSize, true);
+                MTLHeapDescriptor* tmpHeapDesc = [MTLHeapDescriptor new];
+                tmpHeapDesc.type = MTLHeapTypePlacement;
+                tmpHeapDesc.storageMode = MTLStorageModePrivate;
+                tmpHeapDesc.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+                tmpHeapDesc.hazardTrackingMode = MTLHazardTrackingModeTracked;
+                tmpHeapDesc.size = tmpBuffSize;
+                tmpHeap = [cmdEncoder->getMTLDevice() newHeapWithDescriptor: tmpHeapDesc];  // retained
+                [tmpHeapDesc release];
+                tmpBuff = [tmpHeap newBufferWithLength: tmpBuffSize
+                                               options: MTLResourceStorageModePrivate
+                                                offset: 0];  // retained (owned by heap)
 
-                ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBuffer = tmpBuff->_mtlBuffer;
-                ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBufferOffset = tmpBuff->_offset;
+                // Make the HEAP resident (the working round-2 residency unit). Released + removed
+                // in the command-buffer completion handler below.
+#if MVK_XCODE_16
+                if (cmdEncoder->getDevice()->hasResidencySet())
+                    cmdEncoder->getDevice()->makeResident(tmpHeap);
+#endif
+
+                ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBuffer = tmpBuff;
+                ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBufferOffset = 0;
 
                 // Dispatch compute pipeline to convert instance data
                 uint32_t srcStride = sizeof(VkAccelerationStructureInstanceKHR);
@@ -97,8 +124,8 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 [mtlConvertEncoder setBuffer: mvkInstancesBuffer->getMTLBuffer()
                                       offset: bOffset
                                      atIndex: 0];
-                [mtlConvertEncoder setBuffer: tmpBuff->_mtlBuffer
-                                      offset: tmpBuff->_offset
+                [mtlConvertEncoder setBuffer: tmpBuff
+                                      offset: 0
                                      atIndex: 1];
                 cmdEncoder->setComputeBytes(mtlConvertEncoder,
                                             &srcStride,
@@ -110,17 +137,10 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                                             3);
 
                 // Declare the buffers this convert dispatch touches as resident on THIS encoder.
-                // tmpBuff (the private/transient pool buffer) IS in the global residency set
-                // (see MVKMTLBufferAllocationPool::addMTLBuffer), but the encoder still needs an
-                // explicit useResource:/useHeap: to express the per-encoder usage and the
-                // read-write dependency between the convert and build encoders; without it the
-                // write would page-fault. The instances input buffer is a normal device buffer;
-                // cover it via its parent heap when placement-heap-backed, else useResource:.
-                if (tmpBuff->_mtlBuffer.heap) {
-                    [mtlConvertEncoder useHeap: tmpBuff->_mtlBuffer.heap];
-                } else {
-                    [mtlConvertEncoder useResource: tmpBuff->_mtlBuffer usage: MTLResourceUsageWrite];
-                }
+                // tmpBuff lives in tmpHeap (made resident above); cover it via its parent heap.
+                // The instances input buffer is a normal device buffer; cover it via its parent
+                // heap when placement-heap-backed, else useResource:.
+                [mtlConvertEncoder useHeap: tmpHeap];
                 if (id<MTLHeap> instHeap = mvkInstancesBuffer->getMTLHeap()) {
                     [mtlConvertEncoder useHeap: instHeap];
                 } else {
@@ -184,11 +204,11 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
 
             if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
                 // TLAS: the build encoder reads the converted-instance descriptor buffer (the
-                // transient tmpBuff assigned to descriptor.instanceDescriptorBuffer above), not
+                // dedicated tmpBuff assigned to descriptor.instanceDescriptorBuffer above), not
                 // the original VkInstance input buffer (that is consumed by the convert compute
-                // encoder). tmpBuff is a pooled MTLBuffer, typically not heap-backed → useResource.
-                if (tmpBuff && tmpBuff->_mtlBuffer)
-                    useHeapForResource(tmpBuff->_mtlBuffer.heap, tmpBuff->_mtlBuffer, MTLResourceUsageRead);
+                // encoder). tmpBuff lives in tmpHeap (made resident above) → cover via useHeap.
+                if (tmpHeap)
+                    useHeapForResource(tmpHeap, tmpBuff, MTLResourceUsageRead);
 
                 // The instanced BLAS handles referenced by the TLAS descriptor. These are the
                 // device's currently-built acceleration structures (the same list the descriptor
@@ -229,6 +249,24 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                                      scratchBufferOffset:scratchBufferOffset];
 
             [descriptor release];
+
+            // Tie the dedicated instance-conversion heap+buffer lifetime to command-buffer
+            // COMPLETION (not recording end): the GPU reads tmpBuff during the build, so the heap
+            // must stay resident and alive until execution finishes. Drop residency + release on
+            // completion. (TLAS-only; nil for BLAS.)
+            if (tmpHeap) {
+                MVKDevice* tmpDevice = mvkDevice;
+                id<MTLHeap> capturedHeap = tmpHeap;
+                id<MTLBuffer> capturedBuff = tmpBuff;
+                [cmdEncoder->_mtlCmdBuffer addCompletedHandler: ^(id<MTLCommandBuffer>) {
+#if MVK_XCODE_16
+                    if (tmpDevice->hasResidencySet())
+                        tmpDevice->removeResidency(capturedHeap);
+#endif
+                    [capturedBuff release];
+                    [capturedHeap release];
+                }];
+            }
         }
         else if (buildInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR) {
             // TODO: check if we are allowed to update, not sure if validation layers handle this
