@@ -472,8 +472,17 @@ VkResult MVKQueueCommandBufferSubmission::execute() {
 	// Wait time from an async vkQueueSubmit() call to starting submit and encoding of the command buffers
 	addPerformanceInterval(_queue->getPerformanceStats().queue.waitSubmitCommandBuffers, _creationTime);
 
-	// Submit each command buffer.
-	submitCommandBuffers();
+	// Submit each command buffer. The active MTLCommandBuffer is ENQUEUED
+	// before encoding; if encoding raises an Objective-C exception the buffer
+	// would never be committed and every later command buffer on the queue
+	// would wait forever (no watchdog, no error). Catch, report, and still
+	// commit so the queue stays live.
+	@try {
+		submitCommandBuffers();
+	} @catch (NSException* ex) {
+		reportError(VK_ERROR_DEVICE_LOST, "Exception while encoding a queue submission: %s — %s (command buffer committed to keep the queue live).",
+					ex.name.UTF8String, ex.reason.UTF8String);
+	}
 
 	// If using encoded semaphore signaling, do so now.
 	for (auto& ss : _signalSemaphores) { ss.encodeSignal(getActiveMTLCommandBuffer()); }

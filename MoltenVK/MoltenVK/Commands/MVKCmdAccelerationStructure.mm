@@ -61,8 +61,15 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
         MVKDevice* mvkDevice = cmdEncoder->getDevice();
         MVKBuffer* mvkBuffer = mvkDevice->getBufferAtAddress(buildInfo.scratchData.deviceAddress);
 
-        // TODO: throw error if mvkBuffer is null?
-        
+        // Never encode against a missing resource: an encode that faults or
+        // throws leaves the (already enqueued) Metal command buffer
+        // uncommitted, which wedges the queue forever with no watchdog and no
+        // error. Report and skip instead; the submission still commits.
+        if (!mvkBuffer || !dstAccStruct) {
+            reportError(VK_ERROR_UNKNOWN, "vkCmdBuildAccelerationStructuresKHR(): scratch buffer or destination AS not found (scratch address 0x%llx); build skipped.",
+                        (unsigned long long)buildInfo.scratchData.deviceAddress);
+            continue;
+        }
         id<MTLBuffer> scratchBuffer = mvkBuffer->getMTLBuffer();
         NSInteger scratchBufferOffset = mvkBuffer->getMTLBufferOffset();
         
@@ -88,6 +95,12 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 const VkAccelerationStructureGeometryInstancesDataKHR& instancesData = buildInfo.pGeometries[0].geometry.instances;
                 uint64_t instancesBDA = instancesData.data.deviceAddress;
                 MVKBuffer* mvkInstancesBuffer = cmdEncoder->getDevice()->getBufferAtAddress(instancesBDA);
+                if (!mvkInstancesBuffer) {
+                    reportError(VK_ERROR_UNKNOWN, "vkCmdBuildAccelerationStructuresKHR(): instance buffer not found at address 0x%llx; TLAS build skipped.",
+                                (unsigned long long)instancesBDA);
+                    [descriptor release];
+                    continue;
+                }
                 NSUInteger bOffset = (instancesBDA - mvkInstancesBuffer->getMTLBufferGPUAddress()) + mvkInstancesBuffer->getMTLBufferOffset();
 
                 // Allocate a dedicated placement-heap-backed Private buffer to store converted
@@ -107,9 +120,19 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 tmpHeapDesc.size = tmpBuffSize;
                 tmpHeap = [cmdEncoder->getMTLDevice() newHeapWithDescriptor: tmpHeapDesc];  // retained
                 [tmpHeapDesc release];
-                tmpBuff = [tmpHeap newBufferWithLength: tmpBuffSize
-                                               options: MTLResourceStorageModePrivate
-                                                offset: 0];  // retained (owned by heap)
+                tmpBuff = tmpHeap ? [tmpHeap newBufferWithLength: tmpBuffSize
+                                                         options: MTLResourceStorageModePrivate
+                                                          offset: 0] : nil;  // retained (owned by heap)
+                if (!tmpHeap || !tmpBuff) {
+                    // Metal returns nil under memory pressure. Encoding the
+                    // convert kernel with nil buffers raises inside Metal and
+                    // the command buffer never commits: report, release, skip.
+                    reportError(VK_ERROR_OUT_OF_DEVICE_MEMORY, "vkCmdBuildAccelerationStructuresKHR(): could not allocate the %lu-byte instance conversion buffer (memory pressure); TLAS build skipped.",
+                                (unsigned long)tmpBuffSize);
+                    [tmpHeap release];
+                    [descriptor release];
+                    continue;
+                }
 
                 // Make the HEAP resident (the working round-2 residency unit). Released + removed
                 // in the command-buffer completion handler below.
