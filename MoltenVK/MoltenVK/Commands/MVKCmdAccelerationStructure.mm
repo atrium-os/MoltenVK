@@ -24,6 +24,76 @@
 #include "MVKFoundation.h"
 
 #include <Metal/Metal.h>
+#include <mutex>
+#include <vector>
+
+// Instance-conversion heaps, pooled. Every TLAS build/refit converts the
+// Vulkan instances into a Private placement heap the build reads. Allocating
+// (and making resident) a fresh heap per build cost ~5 ms of GPU-side time
+// per update at ~860 k instances (~62 MB) — visible as a stutter when TLAS
+// updates come every few hundred ms. A heap is taken busy while a command
+// buffer uses it and returned by that buffer's completion handler; pooled
+// heaps stay resident. Sized with 25 % headroom so a slowly growing instance
+// count reuses them.
+namespace {
+struct MVKConvHeap { id<MTLDevice> device; id<MTLHeap> heap; id<MTLBuffer> buff; NSUInteger size; bool busy; };
+std::mutex gMVKConvHeapLock;
+std::vector<MVKConvHeap> gMVKConvHeaps;
+constexpr size_t kMVKConvHeapPoolMax = 3;
+}
+
+// A heap + buffer of at least `size` bytes: *slot = its pool index, or -1
+// when it is a transient (pool full) the caller releases on completion.
+static bool mvkAcquireConvHeap(MVKDevice* mvkDev, id<MTLDevice> mtlDev, NSUInteger size,
+                               id<MTLHeap>* heap, id<MTLBuffer>* buff, long* slot) {
+    std::lock_guard<std::mutex> lock(gMVKConvHeapLock);
+    for (size_t i = 0; i < gMVKConvHeaps.size(); i++) {
+        MVKConvHeap& e = gMVKConvHeaps[i];
+        if (!e.busy && e.device == mtlDev && e.size >= size) {
+            e.busy = true; *heap = e.heap; *buff = e.buff; *slot = (long)i; return true;
+        }
+    }
+    NSUInteger cap = size + size / 4;
+    MTLHeapDescriptor* hd = [MTLHeapDescriptor new];
+    hd.type = MTLHeapTypePlacement;
+    hd.storageMode = MTLStorageModePrivate;
+    hd.cpuCacheMode = MTLCPUCacheModeDefaultCache;
+    hd.hazardTrackingMode = MTLHazardTrackingModeTracked;
+    hd.size = cap;
+    id<MTLHeap> h = [mtlDev newHeapWithDescriptor: hd];  // retained
+    [hd release];
+    id<MTLBuffer> b = h ? [h newBufferWithLength: cap options: MTLResourceStorageModePrivate offset: 0] : nil;
+    if (!h || !b) { [b release]; [h release]; return false; }
+#if MVK_XCODE_16
+    if (mvkDev->hasResidencySet()) mvkDev->makeResident(h);
+#endif
+    // An idle entry of this device too small for `size`: replaced in place
+    // (indices stay stable for busy entries).
+    for (size_t i = 0; i < gMVKConvHeaps.size(); i++) {
+        MVKConvHeap& e = gMVKConvHeaps[i];
+        if (!e.busy && e.device == mtlDev) {
+#if MVK_XCODE_16
+            if (mvkDev->hasResidencySet()) mvkDev->removeResidency(e.heap);
+#endif
+            [e.buff release]; [e.heap release];
+            e = MVKConvHeap{ mtlDev, h, b, cap, true };
+            *heap = h; *buff = b; *slot = (long)i; return true;
+        }
+    }
+    if (gMVKConvHeaps.size() < kMVKConvHeapPoolMax) {
+        gMVKConvHeaps.push_back(MVKConvHeap{ mtlDev, h, b, cap, true });
+        *slot = (long)gMVKConvHeaps.size() - 1;
+    } else {
+        *slot = -1;
+    }
+    *heap = h; *buff = b;
+    return true;
+}
+
+static void mvkReleaseConvHeap(long slot) {
+    std::lock_guard<std::mutex> lock(gMVKConvHeapLock);
+    if (slot >= 0 && (size_t)slot < gMVKConvHeaps.size()) gMVKConvHeaps[slot].busy = false;
+}
 
 #pragma mark -
 #pragma mark MVKCmdBuildAccelerationStructure
@@ -94,6 +164,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
             // handler so they outlive GPU execution.
             id<MTLHeap> tmpHeap = nil;
             id<MTLBuffer> tmpBuff = nil;
+            long tmpSlot = -1;
             if (buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) {
                 // Only one geometry, validated in populateMTLDescriptor
 
@@ -119,17 +190,10 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 // overflowed the buffer by one userID field per instance → heap corruption → an
                 // intermittent/count-dependent GPU hang during the build.
                 NSUInteger tmpBuffSize = sizeof(MTLAccelerationStructureUserIDInstanceDescriptor) * ranges[0].primitiveCount;
-                MTLHeapDescriptor* tmpHeapDesc = [MTLHeapDescriptor new];
-                tmpHeapDesc.type = MTLHeapTypePlacement;
-                tmpHeapDesc.storageMode = MTLStorageModePrivate;
-                tmpHeapDesc.cpuCacheMode = MTLCPUCacheModeDefaultCache;
-                tmpHeapDesc.hazardTrackingMode = MTLHazardTrackingModeTracked;
-                tmpHeapDesc.size = tmpBuffSize;
-                tmpHeap = [cmdEncoder->getMTLDevice() newHeapWithDescriptor: tmpHeapDesc];  // retained
-                [tmpHeapDesc release];
-                tmpBuff = tmpHeap ? [tmpHeap newBufferWithLength: tmpBuffSize
-                                                         options: MTLResourceStorageModePrivate
-                                                          offset: 0] : nil;  // retained (owned by heap)
+                // From the pool (see mvkAcquireConvHeap): resident, reused.
+                if (!mvkAcquireConvHeap(cmdEncoder->getDevice(), cmdEncoder->getMTLDevice(), tmpBuffSize, &tmpHeap, &tmpBuff, &tmpSlot)) {
+                    tmpHeap = nil; tmpBuff = nil;
+                }
                 if (!tmpHeap || !tmpBuff) {
                     // Metal returns nil under memory pressure. Encoding the
                     // convert kernel with nil buffers raises inside Metal and
@@ -141,12 +205,7 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                     continue;
                 }
 
-                // Make the HEAP resident (the working round-2 residency unit). Released + removed
-                // in the command-buffer completion handler below.
-#if MVK_XCODE_16
-                if (cmdEncoder->getDevice()->hasResidencySet())
-                    cmdEncoder->getDevice()->makeResident(tmpHeap);
-#endif
+                // (Pooled heaps are made resident once, when created.)
 
                 ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBuffer = tmpBuff;
                 ((MTLInstanceAccelerationStructureDescriptor*)descriptor).instanceDescriptorBufferOffset = 0;
@@ -309,7 +368,13 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 MVKDevice* tmpDevice = mvkDevice;
                 id<MTLHeap> capturedHeap = tmpHeap;
                 id<MTLBuffer> capturedBuff = tmpBuff;
+                long capturedSlot = tmpSlot;
                 [cmdEncoder->_mtlCmdBuffer addCompletedHandler: ^(id<MTLCommandBuffer>) {
+                    if (capturedSlot >= 0) {
+                        // Pooled: back to the pool (stays resident).
+                        mvkReleaseConvHeap(capturedSlot);
+                        return;
+                    }
 #if MVK_XCODE_16
                     if (tmpDevice->hasResidencySet())
                         tmpDevice->removeResidency(capturedHeap);
