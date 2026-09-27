@@ -175,12 +175,14 @@ MTLAccelerationStructureDescriptor* MVKAccelerationStructure::newMTLAcceleration
     if (!descriptor)
         return nullptr;
 
+    // The usage bits combine: ALLOW_UPDATE with PREFER_FAST_BUILD is a
+    // refittable, fast-built structure (the else-chain dropped fast build as
+    // soon as updates were allowed).
+    descriptor.usage = MTLAccelerationStructureUsageNone;
     if (mvkIsAnyFlagEnabled(buildInfo.flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR))
-        descriptor.usage += MTLAccelerationStructureUsageRefit;
-    else if (mvkIsAnyFlagEnabled(buildInfo.flags, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR))
-        descriptor.usage += MTLAccelerationStructureUsagePreferFastBuild;
-    else
-        descriptor.usage = MTLAccelerationStructureUsageNone;
+        descriptor.usage |= MTLAccelerationStructureUsageRefit;
+    if (mvkIsAnyFlagEnabled(buildInfo.flags, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR))
+        descriptor.usage |= MTLAccelerationStructureUsagePreferFastBuild;
 
     return descriptor;
 }
