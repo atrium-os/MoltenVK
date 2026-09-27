@@ -4986,14 +4986,20 @@ void MVKDevice::returnVisibilityBuffer(MVKVisibilityBuffer&& buffer) {
 
 NSArray<id<MTLAccelerationStructure>>* MVKDevice::getAccelerationStructureList() {
     std::lock_guard<std::mutex> lock(_accLock);
-    // Skip nil handles: a referenced AS may exist (vkCreate'd) but not yet be
-    // built — e.g. a TLAS getBuildSizes query before any build encode — and
-    // NSArray rejects nil, so a raw initWithObjects: crashes. Sizing only
-    // needs the instance count; the real handles are valid by build time.
+    // A TLAS instance names its BLAS by SLOT (accelerationStructureIndex =
+    // the address's low bits = the index into _allAccStructs), so the list
+    // must keep every slot at its index. A nil slot (a destroyed AS awaiting
+    // reuse, or one created but not yet built) is filled with a placeholder
+    // — any live AS: nothing references a free slot, and NSArray rejects nil.
+    // Skipping nil entries (the old behaviour) shifted every later slot, so a
+    // gap below a live BLAS instanced the wrong geometry.
+    id<MTLAccelerationStructure> placeholder = nil;
+    for (size_t i = 0; i < _allAccStructs.size() && !placeholder; i++) { placeholder = _allAccStructs[i]; }
     NSMutableArray<id<MTLAccelerationStructure>>* list = [NSMutableArray arrayWithCapacity: _allAccStructs.size()];
+    if (!placeholder) { return list; }
     for (size_t i = 0; i < _allAccStructs.size(); i++) {
         id<MTLAccelerationStructure> as = _allAccStructs[i];
-        if (as) { [list addObject: as]; }
+        [list addObject: as ? as : placeholder];
     }
     return list;
 }
