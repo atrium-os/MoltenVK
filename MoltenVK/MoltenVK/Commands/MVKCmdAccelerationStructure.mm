@@ -73,7 +73,14 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
         id<MTLBuffer> scratchBuffer = mvkBuffer->getMTLBuffer();
         NSInteger scratchBufferOffset = mvkBuffer->getMTLBufferOffset();
         
-        if (buildInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR) {
+        // A TLAS update is a refit that re-reads the instances: it needs the
+        // same instance conversion and residency as a build, so it takes the
+        // build path and only the final encoder call differs (the old update
+        // branch below refitted with a bare descriptor — no instance data).
+        MVKAccelerationStructure* mvkRefitSrc = (buildInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                                                 && buildInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR)
+                                                ? (MVKAccelerationStructure*)buildInfo.srcAccelerationStructure : nullptr;
+        if (buildInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR || mvkRefitSrc) {
             MTLAccelerationStructureDescriptor* descriptor = mvkDstAccStruct->newMTLAccelerationStructureDescriptor(buildInfo, entry.ranges.data(), nullptr);
 
             id<MTLFence> fence = nil;
@@ -277,10 +284,20 @@ void MVKCmdBuildAccelerationStructure::encode(MVKCommandEncoder* cmdEncoder) {
                 }
             }
 
-            [accStructEncoder buildAccelerationStructure:dstAccStruct
-                                              descriptor:descriptor
-                                           scratchBuffer:scratchBuffer
-                                     scratchBufferOffset:scratchBufferOffset];
+            if (mvkRefitSrc) {
+                id<MTLAccelerationStructure> srcAS = mvkRefitSrc->getMTLAccelerationStructure();
+                useHeapForResource(mvkRefitSrc->getMTLHeap(), srcAS, MTLResourceUsageRead);
+                [accStructEncoder refitAccelerationStructure:srcAS
+                                                  descriptor:descriptor
+                                                 destination:dstAccStruct
+                                               scratchBuffer:scratchBuffer
+                                         scratchBufferOffset:scratchBufferOffset];
+            } else {
+                [accStructEncoder buildAccelerationStructure:dstAccStruct
+                                                  descriptor:descriptor
+                                               scratchBuffer:scratchBuffer
+                                         scratchBufferOffset:scratchBufferOffset];
+            }
 
             [descriptor release];
 
