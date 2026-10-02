@@ -656,7 +656,53 @@ void MVKSwapchain::destroy() {
 	MVKVulkanAPIDeviceObject::destroy();
 }
 
+// Orbis frame-interpolation pacing (see MVKSwapchain.h).
+static void orbisPresentAt(id<CAMetalDrawable> d, double shown, double dur) {
+	if (shown > 0) { [d presentAtTime: shown + dur]; } else { [d present]; }	// a dropped lead: show now
+}
+
+void MVKSwapchain::orbisSetLead(NSUInteger drawableID) {
+	id<CAMetalDrawable> stale = nil;
+	{
+		std::lock_guard<std::mutex> lock(_orbisChainLock);
+		_orbisLeadID = drawableID;
+		_orbisLeadShown = -1.0;
+		stale = (id<CAMetalDrawable>)_orbisFollower;	// its lead was never reported: do not hold it
+		_orbisFollower = nil;
+	}
+	if (stale) { [stale present]; [stale release]; }
+}
+
+void MVKSwapchain::orbisPresentFollower(id mtlDrawable, double durationSec) {
+	double shown;
+	{
+		std::lock_guard<std::mutex> lock(_orbisChainLock);
+		shown = _orbisLeadShown;
+		if (shown < 0) {
+			_orbisFollower = [mtlDrawable retain];
+			_orbisFollowerDur = durationSec;
+			return;
+		}
+	}
+	orbisPresentAt((id<CAMetalDrawable>)mtlDrawable, shown, durationSec);
+}
+
+void MVKSwapchain::orbisDrawableShown(NSUInteger drawableID, double presentedTimeSec) {
+	id<CAMetalDrawable> f = nil;
+	double dur = 0.0;
+	{
+		std::lock_guard<std::mutex> lock(_orbisChainLock);
+		if (drawableID != _orbisLeadID || _orbisLeadShown >= 0) { return; }
+		_orbisLeadShown = presentedTimeSec;
+		f = (id<CAMetalDrawable>)_orbisFollower;
+		dur = _orbisFollowerDur;
+		_orbisFollower = nil;
+	}
+	if (f) { orbisPresentAt(f, presentedTimeSec, dur); [f release]; }
+}
+
 MVKSwapchain::~MVKSwapchain() {
+	if (_orbisFollower) { [(id<CAMetalDrawable>)_orbisFollower release]; _orbisFollower = nil; }
     if (_licenseWatermark) { _licenseWatermark->destroy(); }
 }
 

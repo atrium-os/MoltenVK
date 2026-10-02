@@ -126,6 +126,21 @@ protected:
 	void notifyPresentComplete(const MVKImagePresentInfo& presentInfo);
 	void forceUnpresentedImageCompletion();
 
+	// Orbis: frame-interpolation pacing (MVKImage.mm, bit 62 of desiredPresentTime =
+	// "follow"). A generated frame is the LEAD; its real frame FOLLOWS: it is
+	// presented at the lead's ACTUAL on-screen time plus a duration, once the
+	// lead's presented-handler reports it (both drawables are otherwise scheduled
+	// microseconds apart, land on the same refresh, and the real one replaces the
+	// generated one — measured 6–8 µs on screen, 2026-10-02).
+	void orbisSetLead(NSUInteger drawableID);
+	void orbisPresentFollower(id mtlDrawable, double durationSec);
+	void orbisDrawableShown(NSUInteger drawableID, double presentedTimeSec);
+	std::mutex _orbisChainLock;
+	NSUInteger _orbisLeadID = 0;
+	double _orbisLeadShown = -1.0;		// s (CACurrentMediaTime); -1 = not yet on screen
+	id _orbisFollower = nil;			// retained while it waits for its lead
+	double _orbisFollowerDur = 0.0;
+
 	MVKSurface* _surface = nullptr;
     MVKWatermark* _licenseWatermark = nullptr;
 	MVKSmallVector<MVKPresentableSwapchainImage*, kMVKMaxSwapchainImageCount> _presentableImages;
