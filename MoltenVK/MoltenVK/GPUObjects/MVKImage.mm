@@ -1678,23 +1678,7 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 		if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
 			mtlDrwbl.layer.displaySyncEnabledMVK = (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
 		}
-		// Orbis: bit 63 set = the low bits are a duration (ns), for the aqueduct
-		// host's frame interpolation:
-		// - bit 62 clear (the generated frame, the LEAD): at least that long
-		//   after the previous drawable was shown (presentAfterMinimumDuration:);
-		// - bit 62 set (its real frame, the FOLLOWER): at the lead's ACTUAL
-		//   on-screen time plus that long (MVKSwapchain::orbis*). Minimum
-		//   durations alone put both on the same refresh: neither is visible
-		//   when the second is scheduled.
-		if (presentInfo.desiredPresentTime & (1ull << 63)) {
-			double dur = (double)(presentInfo.desiredPresentTime & ~(3ull << 62)) * 1.0e-9;
-			if (presentInfo.desiredPresentTime & (1ull << 62)) {
-				_swapchain->orbisPresentFollower(mtlDrwbl, dur);
-			} else {
-				_swapchain->orbisSetLead(mtlDrwbl.drawableID);
-				[mtlDrwbl presentAfterMinimumDuration: dur];
-			}
-		} else if (presentInfo.desiredPresentTime) {
+		if (presentInfo.desiredPresentTime) {
 			[mtlDrwbl presentAtTime: (double)presentInfo.desiredPresentTime * 1.0e-9];
 		} else {
 			[mtlDrwbl present];
@@ -1754,10 +1738,6 @@ void MVKPresentableSwapchainImage::addPresentedHandler(id<CAMetalDrawable> mtlDr
 
 #if !MVK_OS_SIMULATOR
 	[mtlDrawable addPresentedHandler: ^(id<MTLDrawable> mtlDrwbl) {
-		{	// Orbis frame-interpolation pacing: a lead's on-screen time releases its follower.
-			lock_guard<mutex> lock(_detachmentLock);
-			if (_swapchain) { _swapchain->orbisDrawableShown(mtlDrwbl.drawableID, mtlDrwbl.presentedTime); }
-		}
 		endPresentation(presentInfo, signaler, mtlDrwbl.presentedTime * 1.0e9);
 	}];
 #else
