@@ -325,7 +325,11 @@ static void bindImplicitBufferData(uint32_t* target, MVKDescriptorSetLayout* lay
 		if (DataType == ImplicitBufferData::TextureSwizzle && isTexelBuffer(binding.descriptorType)) {
 			mvkClear(target, count);
 		} else if (metaOff == 0) {
-			assert(DataType != ImplicitBufferData::BufferSize && "All buffers should have metadata");
+			// Acceleration structures take a buffer slot but carry no buffer-size
+			// metadata (the KHR_acceleration_structure port): a size of 0 is never
+			// read for them. Surfaced with MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=0
+			// (discrete bindings), where this helper runs.
+			assert((DataType != ImplicitBufferData::BufferSize || binding.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) && "All buffers should have metadata");
 			mvkClear(target, count);
 		} else {
 			const char* base = static_cast<const char*>(descriptor) + binding.cpuOffset + metaOff;
