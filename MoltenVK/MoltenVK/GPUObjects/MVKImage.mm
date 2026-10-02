@@ -1678,7 +1678,13 @@ VkResult MVKPresentableSwapchainImage::presentCAMetalDrawable(id<MTLCommandBuffe
 		if (presentInfo.presentMode != VK_PRESENT_MODE_MAX_ENUM_KHR) {
 			mtlDrwbl.layer.displaySyncEnabledMVK = (presentInfo.presentMode != VK_PRESENT_MODE_IMMEDIATE_KHR);
 		}
-		if (presentInfo.desiredPresentTime) {
+		// Orbis: bit 63 set = the low bits are a MINIMUM DURATION (ns) since the
+		// previous drawable was shown (presentAfterMinimumDuration:) — frame
+		// pacing for a generated frame and its real one without predicting
+		// display times (the aqueduct host's frame interpolation).
+		if (presentInfo.desiredPresentTime & (1ull << 63)) {
+			[mtlDrwbl presentAfterMinimumDuration: (double)(presentInfo.desiredPresentTime & ~(1ull << 63)) * 1.0e-9];
+		} else if (presentInfo.desiredPresentTime) {
 			[mtlDrwbl presentAtTime: (double)presentInfo.desiredPresentTime * 1.0e-9];
 		} else {
 			[mtlDrwbl present];
